@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 > nul
 title 启动前后端服务
-
+//.\start-all.bat
 :: 切换到项目根目录
 cd /d "D:\Users\30776\IdeaProjects\springaichat"
 
