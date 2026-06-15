@@ -1,0 +1,49 @@
+{
+  "properties": [
+    {
+      "name": "spring.ai.openai.api-key",
+      "type": "java.lang.String",
+      "description": "阿里云百炼API密钥"
+    },
+    {
+      "name": "spring.ai.openai.base-url",
+      "type": "java.lang.String",
+      "description": "阿里云百炼API基础URL"
+    },
+    {
+      "name": "spring.ai.openai.chat.options.model",
+      "type": "java.lang.String",
+      "description": "AI模型名称"
+    },
+    {
+      "name": "spring.ai.openai.chat.options.temperature",
+      "type": "java.lang.Double",
+      "description": "温度参数，控制输出的随机性"
+    },
+    {
+      "name": "spring.ai.openai.chat.options.max-tokens",
+      "type": "java.lang.Integer",
+      "description": "最大token数"
+    },
+    {
+      "name": "jwt.secret",
+      "type": "java.lang.String",
+      "description": "JWT签名密钥"
+    },
+    {
+      "name": "jwt.expiration",
+      "type": "java.lang.Long",
+      "description": "JWT过期时间（毫秒）"
+    },
+    {
+      "name": "chat.max-history-size",
+      "type": "java.lang.Integer",
+      "description": "最大历史消息数"
+    },
+    {
+      "name": "chat.max-message-length",
+      "type": "java.lang.Integer",
+      "description": "最大消息长度（字符）"
+    }
+  ]
+}
