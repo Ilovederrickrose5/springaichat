@@ -36,3 +36,11 @@ build/
 # Trae IDE 配置文件
 .trae/
 .codegraph/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Log files
+*.log
