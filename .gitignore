@@ -31,3 +31,8 @@ build/
 
 ### VS Code ###
 .vscode/
+
+
+# Trae IDE 配置文件
+.trae/
+.codegraph/
