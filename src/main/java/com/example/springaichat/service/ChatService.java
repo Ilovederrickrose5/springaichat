@@ -95,6 +95,19 @@ public class ChatService {
     }
 
     /**
+     * 删除消息
+     */
+    @Transactional
+    public void deleteMessage(Long userId, Long messageId) {
+        Message message = messageRepository.findById(messageId)
+                .orElseThrow(() -> new RuntimeException("消息不存在"));
+
+        Conversation conversation = getConversation(userId, message.getConversationId());
+
+        messageRepository.deleteById(messageId);
+    }
+
+    /**
      * 删除会话
      */
     @Transactional

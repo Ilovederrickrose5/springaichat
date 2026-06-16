@@ -144,6 +144,30 @@ public class ChatController {
     }
 
     /**
+     * 删除消息
+     */
+    @DeleteMapping("/messages/{messageId}")
+    public ResponseEntity<?> deleteMessage(
+            @AuthenticationPrincipal User user,
+            @PathVariable Long messageId) {
+        try {
+            chatService.deleteMessage(user.getId(), messageId);
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("message", "消息删除成功");
+
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", false);
+            response.put("message", e.getMessage());
+
+            return ResponseEntity.badRequest().body(response);
+        }
+    }
+
+    /**
      * 获取会话的所有消息
      */
     @GetMapping("/conversations/{conversationId}/messages")

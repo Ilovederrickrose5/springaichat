@@ -1,6 +1,6 @@
 <template>
-  <div class="chat-container">
-    <!-- 左侧会话列表 -->
+  <div class="chat-container" :class="{ 'collapsed-sidebar': isCollapsed }">
+    <!-- 左侧会话列表 - 固定定位，不随页面滚动 -->
     <div class="conversation-list" :class="{ collapsed: isCollapsed }">
       <!-- 侧边栏头部（包含收起按钮） -->
       <div class="list-header">
@@ -120,7 +120,19 @@
             </div>
             <div class="message-content">
               <div class="message-text">{{ msg.content }}</div>
-              <div class="message-time">{{ formatTime(msg.createTime) }}</div>
+              <div class="message-footer">
+                <span class="message-time">{{ formatTime(msg.createTime) }}</span>
+                <el-button
+                  v-if="msg.role === 'user'"
+                  type="text"
+                  size="mini"
+                  class="delete-message-btn"
+                  @click.stop="deleteMessage(msg.id)"
+                >
+                  <el-icon><Delete /></el-icon>
+                  删除
+                </el-button>
+              </div>
             </div>
           </div>
 
@@ -180,6 +192,7 @@ import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from '@/utils/axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Delete } from '@element-plus/icons-vue'
 
 const router = useRouter()
 
@@ -196,6 +209,8 @@ const isStreaming = ref(false)
 const isCollapsed = ref(false)
 // 当前登录用户
 const currentUser = ref(localStorage.getItem('username') || '用户')
+// 聊天容器引用
+const chatContainer = ref(null)
 
 // 切换侧边栏收起/展开
 const toggleCollapse = () => {
@@ -290,6 +305,31 @@ const deleteConversation = async (conversationId) => {
           messages.value = []
         }
         ElMessage.success('删除成功')
+      }
+    } catch (error) {
+      ElMessage.error('删除失败')
+    }
+  }).catch(() => {
+    // 用户取消
+  })
+}
+
+// 删除消息
+const deleteMessage = async (messageId) => {
+  ElMessageBox.confirm(
+    '确定要删除这条消息吗？',
+    '提示',
+    {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    }
+  ).then(async () => {
+    try {
+      const response = await axios.delete(`/chat/messages/${messageId}`)
+      if (response.success) {
+        messages.value = messages.value.filter(m => m.id !== messageId)
+        ElMessage.success('消息删除成功')
       }
     } catch (error) {
       ElMessage.error('删除失败')
@@ -554,9 +594,9 @@ const logout = () => {
   display: flex;
   height: 100vh;
   background: #f5f5f5;
+  overflow: hidden;
 }
 
-/* 左侧会话列表 */
 .conversation-list {
   width: 320px;
   background: white;
@@ -564,6 +604,7 @@ const logout = () => {
   display: flex;
   flex-direction: column;
   transition: width 0.3s ease;
+  flex-shrink: 0;
 }
 
 .conversation-list.collapsed {
@@ -758,12 +799,14 @@ const logout = () => {
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-height: 0;
 }
 
 .chat-content {
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-height: 0;
 }
 
 .chat-header {
@@ -832,15 +875,35 @@ const logout = () => {
   word-break: break-word;
 }
 
+.message-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+}
+
 .message-time {
   font-size: 12px;
   color: #999;
-  margin-top: 8px;
-  text-align: right;
 }
 
 .user-message .message-time {
   color: rgba(255, 255, 255, 0.7);
+}
+
+.delete-message-btn {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.user-message:hover .delete-message-btn {
+  opacity: 1;
+}
+
+.delete-message-btn:hover {
+  color: #fff;
 }
 
 .loading-item {
