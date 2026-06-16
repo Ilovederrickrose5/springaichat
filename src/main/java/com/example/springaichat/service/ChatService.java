@@ -99,10 +99,10 @@ public class ChatService {
      */
     @Transactional
     public void deleteMessage(Long userId, Long messageId) {
-        Message message = messageRepository.findById(messageId)
+        com.example.springaichat.entity.Message message = messageRepository.findById(messageId)
                 .orElseThrow(() -> new RuntimeException("消息不存在"));
 
-        Conversation conversation = getConversation(userId, message.getConversationId());
+        getConversation(userId, message.getConversationId());
 
         messageRepository.deleteById(messageId);
     }
