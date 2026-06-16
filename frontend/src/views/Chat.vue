@@ -92,6 +92,15 @@
           <h3>{{ currentConversation?.title || '对话' }}</h3>
           <div class="header-actions">
             <el-button
+              v-if="selectedMessages.length > 0"
+              type="danger"
+              size="small"
+              @click="batchDeleteMessages"
+            >
+              <el-icon><Delete /></el-icon>
+              批量删除 ({{ selectedMessages.length }})
+            </el-button>
+            <el-button
               type="text"
               size="small"
               @click="logout"
@@ -108,8 +117,18 @@
             v-for="msg in messages"
             :key="msg.id"
             class="message-item"
-            :class="msg.role === 'user' ? 'user-message' : 'ai-message'"
+            :class="[
+              msg.role === 'user' ? 'user-message' : 'ai-message',
+              { 'selected': selectedMessages.includes(msg.id) }
+            ]"
           >
+            <div class="message-checkbox">
+              <el-checkbox
+                :value="msg.id"
+                v-model="selectedMessages"
+                @change="onMessageSelect"
+              />
+            </div>
             <div class="message-avatar">
               <el-icon v-if="msg.role === 'user'" :size="32" color="#667eea">
                 <User />
@@ -123,7 +142,6 @@
               <div class="message-footer">
                 <span class="message-time">{{ formatTime(msg.createTime) }}</span>
                 <el-button
-                  v-if="msg.role === 'user'"
                   type="text"
                   size="mini"
                   class="delete-message-btn"
@@ -211,6 +229,8 @@ const isCollapsed = ref(false)
 const currentUser = ref(localStorage.getItem('username') || '用户')
 // 聊天容器引用
 const chatContainer = ref(null)
+// 选中的消息ID列表（用于批量删除）
+const selectedMessages = ref([])
 
 // 切换侧边栏收起/展开
 const toggleCollapse = () => {
@@ -329,10 +349,46 @@ const deleteMessage = async (messageId) => {
       const response = await axios.delete(`/chat/messages/${messageId}`)
       if (response.success) {
         messages.value = messages.value.filter(m => m.id !== messageId)
+        selectedMessages.value = selectedMessages.value.filter(id => id !== messageId)
         ElMessage.success('消息删除成功')
       }
     } catch (error) {
       ElMessage.error('删除失败')
+    }
+  }).catch(() => {
+    // 用户取消
+  })
+}
+
+// 消息选择变化
+const onMessageSelect = () => {
+  // 可选：点击消息内容时取消选择
+}
+
+// 批量删除消息
+const batchDeleteMessages = async () => {
+  if (selectedMessages.value.length === 0) return
+
+  ElMessageBox.confirm(
+    `确定要删除选中的 ${selectedMessages.value.length} 条消息吗？`,
+    '提示',
+    {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    }
+  ).then(async () => {
+    try {
+      const response = await axios.delete('/chat/messages/batch', {
+        data: { messageIds: selectedMessages.value }
+      })
+      if (response.success) {
+        messages.value = messages.value.filter(m => !selectedMessages.value.includes(m.id))
+        selectedMessages.value = []
+        ElMessage.success(`成功删除 ${selectedMessages.value.length} 条消息`)
+      }
+    } catch (error) {
+      ElMessage.error('批量删除失败')
     }
   }).catch(() => {
     // 用户取消
@@ -840,6 +896,18 @@ const logout = () => {
   display: flex;
   margin-bottom: 20px;
   max-width: 80%;
+  align-items: flex-start;
+  transition: background-color 0.2s;
+}
+
+.message-item:hover {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+.message-item.selected {
+  background-color: rgba(102, 126, 234, 0.1);
+  border-radius: 12px;
+  padding: 8px;
 }
 
 .user-message {
@@ -859,8 +927,27 @@ const logout = () => {
   border-radius: 16px 16px 16px 4px;
 }
 
+.message-checkbox {
+  margin: 0 8px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.message-item:hover .message-checkbox {
+  opacity: 1;
+}
+
+.message-item.selected .message-checkbox {
+  opacity: 1;
+}
+
+.user-message .message-checkbox {
+  order: 2;
+}
+
 .message-avatar {
-  margin: 0 12px;
+  margin: 0 8px;
   flex-shrink: 0;
 }
 
@@ -898,12 +985,20 @@ const logout = () => {
   transition: opacity 0.2s;
 }
 
-.user-message:hover .delete-message-btn {
+.message-item:hover .delete-message-btn {
   opacity: 1;
 }
 
 .delete-message-btn:hover {
   color: #fff;
+}
+
+.ai-message .delete-message-btn {
+  color: #999;
+}
+
+.ai-message .delete-message-btn:hover {
+  color: #f56c6c;
 }
 
 .loading-item {

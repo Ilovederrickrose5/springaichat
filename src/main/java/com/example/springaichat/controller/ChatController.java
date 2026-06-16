@@ -168,6 +168,38 @@ public class ChatController {
     }
 
     /**
+     * 批量删除消息
+     */
+    @DeleteMapping("/messages/batch")
+    public ResponseEntity<?> batchDeleteMessages(
+            @AuthenticationPrincipal User user,
+            @RequestBody Map<String, List<Long>> request) {
+        try {
+            List<Long> messageIds = request.get("messageIds");
+            if (messageIds == null || messageIds.isEmpty()) {
+                Map<String, Object> response = new HashMap<>();
+                response.put("success", false);
+                response.put("message", "请选择要删除的消息");
+                return ResponseEntity.badRequest().body(response);
+            }
+
+            chatService.batchDeleteMessages(user.getId(), messageIds);
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("message", "批量删除成功");
+
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", false);
+            response.put("message", e.getMessage());
+
+            return ResponseEntity.badRequest().body(response);
+        }
+    }
+
+    /**
      * 获取会话的所有消息
      */
     @GetMapping("/conversations/{conversationId}/messages")

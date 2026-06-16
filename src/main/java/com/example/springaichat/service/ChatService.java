@@ -108,6 +108,16 @@ public class ChatService {
     }
 
     /**
+     * 批量删除消息
+     */
+    @Transactional
+    public void batchDeleteMessages(Long userId, List<Long> messageIds) {
+        for (Long messageId : messageIds) {
+            deleteMessage(userId, messageId);
+        }
+    }
+
+    /**
      * 删除会话
      */
     @Transactional
