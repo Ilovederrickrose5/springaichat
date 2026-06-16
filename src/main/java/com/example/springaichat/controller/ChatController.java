@@ -1,5 +1,6 @@
 package com.example.springaichat.controller;
 
+import com.example.springaichat.dto.BatchDeleteRequest;
 import com.example.springaichat.dto.ConversationResponse;
 import com.example.springaichat.dto.MessageRequest;
 import com.example.springaichat.dto.MessageResponse;
@@ -170,18 +171,37 @@ public class ChatController {
     /**
      * 批量删除消息
      */
-    @DeleteMapping("/messages/batch")
+    @PostMapping("/messages/batch-delete")
     public ResponseEntity<?> batchDeleteMessages(
             @AuthenticationPrincipal User user,
-            @RequestBody Map<String, List<Long>> request) {
+            @RequestBody BatchDeleteRequest request) {
+        logger.info("批量删除请求 - 用户ID: {}, 请求: {}", user != null ? user.getId() : "null", request);
+
         try {
-            List<Long> messageIds = request.get("messageIds");
-            if (messageIds == null || messageIds.isEmpty()) {
+            List<Object> rawMessageIds = request.getMessageIds();
+            logger.info("原始消息ID列表: {}", rawMessageIds);
+
+            if (rawMessageIds == null || rawMessageIds.isEmpty()) {
                 Map<String, Object> response = new HashMap<>();
                 response.put("success", false);
                 response.put("message", "请选择要删除的消息");
                 return ResponseEntity.badRequest().body(response);
             }
+
+            List<Long> messageIds = rawMessageIds.stream()
+                    .map(id -> {
+                        if (id instanceof Long) {
+                            return (Long) id;
+                        } else if (id instanceof String) {
+                            return Long.parseLong((String) id);
+                        } else if (id instanceof Number) {
+                            return ((Number) id).longValue();
+                        }
+                        throw new RuntimeException("无效的消息ID格式: " + id);
+                    })
+                    .collect(Collectors.toList());
+
+            logger.info("转换后的消息ID列表: {}", messageIds);
 
             chatService.batchDeleteMessages(user.getId(), messageIds);
 
@@ -191,6 +211,7 @@ public class ChatController {
 
             return ResponseEntity.ok(response);
         } catch (Exception e) {
+            logger.error("批量删除失败", e);
             Map<String, Object> response = new HashMap<>();
             response.put("success", false);
             response.put("message", e.getMessage());

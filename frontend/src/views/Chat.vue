@@ -124,9 +124,8 @@
           >
             <div class="message-checkbox">
               <el-checkbox
-                :value="msg.id"
-                v-model="selectedMessages"
-                @change="onMessageSelect"
+                :checked="selectedMessages.includes(msg.id)"
+                @change="(val) => toggleMessageSelect(msg.id, val)"
               />
             </div>
             <div class="message-avatar">
@@ -360,9 +359,15 @@ const deleteMessage = async (messageId) => {
   })
 }
 
-// 消息选择变化
-const onMessageSelect = () => {
-  // 可选：点击消息内容时取消选择
+// 切换消息选择状态
+const toggleMessageSelect = (messageId, checked) => {
+  if (checked) {
+    if (!selectedMessages.value.includes(messageId)) {
+      selectedMessages.value.push(messageId)
+    }
+  } else {
+    selectedMessages.value = selectedMessages.value.filter(id => id !== messageId)
+  }
 }
 
 // 批量删除消息
@@ -379,13 +384,14 @@ const batchDeleteMessages = async () => {
     }
   ).then(async () => {
     try {
-      const response = await axios.delete('/chat/messages/batch', {
-        data: { messageIds: selectedMessages.value }
+      const response = await axios.post('/chat/messages/batch-delete', {
+        messageIds: selectedMessages.value
       })
       if (response.success) {
+        const deleteCount = selectedMessages.value.length
         messages.value = messages.value.filter(m => !selectedMessages.value.includes(m.id))
         selectedMessages.value = []
-        ElMessage.success(`成功删除 ${selectedMessages.value.length} 条消息`)
+        ElMessage.success(`成功删除 ${deleteCount} 条消息`)
       }
     } catch (error) {
       ElMessage.error('批量删除失败')

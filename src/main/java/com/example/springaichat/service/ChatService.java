@@ -104,7 +104,7 @@ public class ChatService {
 
         getConversation(userId, message.getConversationId());
 
-        messageRepository.deleteById(messageId);
+        messageRepository.delete(message);
     }
 
     /**
@@ -112,9 +112,26 @@ public class ChatService {
      */
     @Transactional
     public void batchDeleteMessages(Long userId, List<Long> messageIds) {
-        for (Long messageId : messageIds) {
-            deleteMessage(userId, messageId);
+        if (messageIds == null || messageIds.isEmpty()) {
+            throw new RuntimeException("消息ID列表不能为空");
         }
+
+        List<com.example.springaichat.entity.Message> messages = messageRepository.findAllById(messageIds);
+        
+        if (messages.isEmpty()) {
+            throw new RuntimeException("未找到任何消息");
+        }
+
+        Long conversationId = messages.get(0).getConversationId();
+        getConversation(userId, conversationId);
+
+        for (com.example.springaichat.entity.Message message : messages) {
+            if (!message.getConversationId().equals(conversationId)) {
+                throw new RuntimeException("所有消息必须属于同一个会话");
+            }
+        }
+
+        messageRepository.deleteAll(messages);
     }
 
     /**
