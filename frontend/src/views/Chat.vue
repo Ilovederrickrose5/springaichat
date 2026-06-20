@@ -5,14 +5,14 @@
       <!-- 侧边栏头部（包含收起按钮） -->
       <div class="list-header">
         <div class="header-left">
-          <el-button
-            type="text"
-            size="small"
+          <el-link
+            type="primary"
+            :underline="false"
             class="collapse-btn"
             @click="toggleCollapse"
           >
-            <el-icon><ChevronLeft /></el-icon>
-          </el-button>
+            <el-icon><ArrowLeft /></el-icon>
+          </el-link>
           <h2 v-show="!isCollapsed">对话列表</h2>
         </div>
         <el-button
@@ -34,25 +34,25 @@
           @click="selectConversation(conv.id)"
         >
           <div class="conv-info">
-            <el-icon :size="20" color="#667eea" class="conv-icon"><MessageSquare /></el-icon>
+            <el-icon :size="20" color="#667eea" class="conv-icon"><ChatLineRound /></el-icon>
             <div class="conv-content">
               <div class="conv-title">{{ conv.title }}</div>
               <div class="conv-time">{{ formatTime(conv.updateTime) }}</div>
             </div>
           </div>
-          <el-button
-            type="text"
-            size="small"
+          <el-link
+            type="danger"
+            :underline="false"
             class="delete-btn"
             @click.stop="deleteConversation(conv.id)"
           >
-            <el-icon><Trash /></el-icon>
-          </el-button>
+            <el-icon><Delete /></el-icon>
+          </el-link>
         </div>
 
         <div v-if="conversations.length === 0" class="empty-state">
           <el-icon :size="48" color="#ccc">
-            <MessageSquare />
+            <ChatLineRound />
           </el-icon>
           <p v-show="!isCollapsed">暂无对话</p>
           <el-button v-show="!isCollapsed" type="primary" size="small" @click="createConversation">
@@ -73,14 +73,14 @@
             <span>在线</span>
           </div>
         </div>
-        <el-button
-          type="text"
-          size="small"
+        <el-link
+          type="primary"
+          :underline="false"
           class="logout-btn"
           @click="logout"
         >
-          <el-icon><Power /></el-icon>
-        </el-button>
+          <el-icon><WindPower /></el-icon>
+        </el-link>
       </div>
     </div>
 
@@ -89,6 +89,15 @@
       <div v-if="selectedConversation" class="chat-content">
         <!-- 聊天头部 -->
         <div class="chat-header">
+          <el-link
+            v-show="isCollapsed"
+            type="primary"
+            :underline="false"
+            class="expand-btn"
+            @click="toggleCollapse"
+          >
+            <el-icon><ArrowRight /></el-icon>
+          </el-link>
           <h3>{{ currentConversation?.title || '对话' }}</h3>
           <div class="header-actions">
             <el-button
@@ -100,14 +109,14 @@
               <el-icon><Delete /></el-icon>
               批量删除 ({{ selectedMessages.length }})
             </el-button>
-            <el-button
-              type="text"
-              size="small"
+            <el-link
+              type="primary"
+              :underline="false"
               @click="logout"
             >
-              <el-icon><Power /></el-icon>
+              <el-icon><WindPower /></el-icon>
               退出登录
-            </el-button>
+            </el-link>
           </div>
         </div>
 
@@ -133,22 +142,22 @@
                 <User />
               </el-icon>
               <el-icon v-else :size="32" color="#764ba2">
-                <Robot />
+                <ChatDotRound />
               </el-icon>
             </div>
             <div class="message-content">
               <div class="message-text">{{ msg.content }}</div>
               <div class="message-footer">
                 <span class="message-time">{{ formatTime(msg.createTime) }}</span>
-                <el-button
-                  type="text"
-                  size="mini"
+                <el-link
+                  type="danger"
+                  :underline="false"
                   class="delete-message-btn"
                   @click.stop="deleteMessage(msg.id)"
                 >
                   <el-icon><Delete /></el-icon>
                   删除
-                </el-button>
+                </el-link>
               </div>
             </div>
           </div>
@@ -166,7 +175,7 @@
           <!-- 空状态 -->
           <div v-if="!loading && messages.length === 0" class="empty-chat">
             <el-icon :size="64" color="#ccc">
-              <MessageCircle />
+              <ChatDotRound />
             </el-icon>
             <p>开始与AI对话吧</p>
           </div>
@@ -186,7 +195,7 @@
             :disabled="!inputMessage.trim() || isStreaming"
             @click="sendMessageAction"
           >
-            <el-icon><Send /></el-icon>
+            <el-icon><Promotion /></el-icon>
             {{ isStreaming ? '生成中...' : '发送' }}
           </el-button>
         </div>
@@ -195,7 +204,7 @@
       <!-- 未选择会话时的默认状态 -->
       <div v-else class="default-state">
         <el-icon :size="80" color="#ccc">
-          <MessageSquare />
+          <ChatLineRound />
         </el-icon>
         <h3>选择一个会话开始聊天</h3>
         <p>或创建新的会话</p>
@@ -209,7 +218,7 @@ import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from '@/utils/axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete } from '@element-plus/icons-vue'
+// Element Plus 图标已在 main.js 中全局注册，模板中可直接使用，无需 import
 
 const router = useRouter()
 
@@ -468,20 +477,29 @@ const sendMessageStream = async () => {
   }
   messages.value.push(userMsg)
 
-  // 创建 AI 消息占位符
-  const aiMsg = {
+  // 创建 AI 消息占位符并加入消息列表
+  const aiMsgPlaceholder = {
     id: Date.now() + 1,
     conversationId: selectedConversation.value,
     role: 'assistant',
     content: '',
     createTime: new Date().toISOString()
   }
-  messages.value.push(aiMsg)
+  messages.value.push(aiMsgPlaceholder)
+  const aiMsgIndex = messages.value.length - 1
   streamingContent.value = ''
 
   nextTick(() => {
     scrollToBottom()
   })
+
+  // 辅助函数：通过数组索引赋值强制触发 Vue 响应式更新
+  const updateAiMessage = (content) => {
+    messages.value[aiMsgIndex] = {
+      ...messages.value[aiMsgIndex],
+      content: content
+    }
+  }
 
   try {
     // 获取 JWT token
@@ -492,12 +510,7 @@ const sendMessageStream = async () => {
       'Authorization': `Bearer ${token}`
     }
 
-    console.log('[流式发送] token =', token)
-    console.log('[流式发送] request url =', 'http://localhost:8080/api/chat/messages/stream')
-    console.log('[流式发送] request method =', 'POST')
-    console.log('[流式发送] request headers =', requestHeaders)
-
-    // 使用 EventSource 或 fetch 进行 SSE 请求
+    // 使用 fetch 进行 SSE 请求
     const response = await fetch('http://localhost:8080/api/chat/messages/stream', {
       method: 'POST',
       headers: requestHeaders,
@@ -507,12 +520,8 @@ const sendMessageStream = async () => {
       })
     })
 
-    console.log('[流式发送] response status =', response.status)
-    console.log('[流式发送] response ok =', response.ok)
-
     if (!response.ok) {
       const errorText = await response.text()
-      console.log('[流式发送] response body =', errorText)
       throw new Error(`请求失败: ${response.status} ${errorText}`)
     }
 
@@ -531,8 +540,8 @@ const sendMessageStream = async () => {
 
       const chunk = decoder.decode(value, { stream: true })
       pendingBuffer += chunk
-      console.log('[流式发送] raw chunk =', chunk)
 
+      // 按 SSE 协议解析：事件之间以双换行分隔
       const events = pendingBuffer.split(/\r?\n\r?\n/)
       pendingBuffer = events.pop() || ''
 
@@ -541,9 +550,9 @@ const sendMessageStream = async () => {
         for (const line of lines) {
           if (line.startsWith('data:')) {
             const parsedContent = line.slice(5).replace(/^\s/, '')
-            console.log('[流式发送] parsed content =', parsedContent)
             streamingContent.value += parsedContent
-            aiMsg.content = streamingContent.value
+            // 通过索引赋值强制触发 Vue 响应式更新
+            updateAiMessage(streamingContent.value)
             nextTick(() => {
               scrollToBottom()
             })
@@ -552,14 +561,14 @@ const sendMessageStream = async () => {
       }
     }
 
+    // 处理缓冲区中剩余的数据
     if (pendingBuffer.trim()) {
       const lines = pendingBuffer.split(/\r?\n/)
       for (const line of lines) {
         if (line.startsWith('data:')) {
           const parsedTailContent = line.slice(5).replace(/^\s/, '')
-          console.log('[流式发送] parsed tail content =', parsedTailContent)
           streamingContent.value += parsedTailContent
-          aiMsg.content = streamingContent.value
+          updateAiMessage(streamingContent.value)
         }
       }
     }
@@ -571,7 +580,7 @@ const sendMessageStream = async () => {
     console.error('流式发送失败:', error)
     ElMessage.error('发送失败，请检查网络连接')
     // 移除失败的 AI 消息
-    messages.value = messages.value.filter(m => m.id !== aiMsg.id)
+    messages.value.splice(aiMsgIndex, 1)
   } finally {
     isStreaming.value = false
   }
@@ -652,11 +661,28 @@ const logout = () => {
 </script>
 
 <style scoped>
+/* el-link 样式覆盖：让其表现与 el-button 一致 */
+.el-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  font-size: 14px;
+  padding: 4px 8px;
+}
+.el-link .el-icon {
+  margin-right: 4px;
+}
+.el-link:last-child .el-icon {
+  margin-right: 0;
+}
+
 .chat-container {
   display: flex;
   height: 100vh;
   background: #f5f5f5;
   overflow: hidden;
+  position: relative;
 }
 
 .conversation-list {
@@ -665,12 +691,15 @@ const logout = () => {
   border-right: 1px solid #e8e8e8;
   display: flex;
   flex-direction: column;
-  transition: width 0.3s ease;
+  transition: width 0.3s ease, padding 0.3s ease, border 0.3s ease;
   flex-shrink: 0;
+  overflow: hidden;
 }
 
 .conversation-list.collapsed {
-  width: 60px;
+  width: 0;
+  padding: 0;
+  border-right: none;
 }
 
 .list-header {
@@ -703,6 +732,23 @@ const logout = () => {
 
 .conversation-list.collapsed .collapse-btn {
   transform: rotate(180deg);
+}
+
+/* 折叠状态下显示的展开按钮 - 放在 chat-header 内联位置 */
+.expand-btn {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  margin-right: 8px;
+  transition: background-color 0.2s;
+  flex-shrink: 0;
+}
+
+.expand-btn:hover {
+  background-color: #f5f5f5;
 }
 
 .list-header h2 {

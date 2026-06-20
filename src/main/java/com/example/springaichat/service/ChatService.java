@@ -339,11 +339,9 @@ public class ChatService {
             String userContent, Long conversationId) {
         StringBuilder fullResponse = new StringBuilder();
 
-        // 添加用户消息到历史
-        chatHistory.add(new UserMessage(userContent));
-
-        return chatClient.prompt()
-                .messages(buildMessages(new ArrayList<>(), userContent))
+        // 先构建 prompt（此时 chatHistory 不包含当前用户消息）
+        Flux<String> responseFlux = chatClient.prompt()
+                .messages(buildMessages(chatHistory, userContent))
                 .stream()
                 .content()
                 .map(content -> {
@@ -351,18 +349,21 @@ public class ChatService {
                     return content;
                 })
                 .doOnComplete(() -> {
-                    // 流结束后保存完整响应
                     logger.info("streamAiResponse completed, conversationId={}, responseLength={}",
                             conversationId, fullResponse.length());
                     saveAiResponse(conversationId, fullResponse.toString(), chatHistory, userContent);
                 })
                 .doOnError(error -> {
                     logger.error("streamAiResponse failed, conversationId=" + conversationId, error);
-                    // 发生错误时清理
                     if (!chatHistory.isEmpty() && chatHistory.get(chatHistory.size() - 1) instanceof UserMessage) {
                         chatHistory.remove(chatHistory.size() - 1);
                     }
                 });
+
+        // 构建 prompt 后再将用户消息加入历史，供后续上下文记忆使用
+        chatHistory.add(new UserMessage(userContent));
+
+        return responseFlux;
     }
 
     /**
