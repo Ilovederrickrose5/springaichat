@@ -121,7 +121,7 @@
         </div>
 
         <!-- 消息列表 -->
-        <div ref="messageList" class="message-list">
+        <div ref="messageList" class="message-list" @click="closeContextMenu">
           <div
             v-for="msg in messages"
             :key="msg.id"
@@ -130,6 +130,7 @@
               msg.role === 'user' ? 'user-message' : 'ai-message',
               { 'selected': selectedMessages.includes(msg.id) }
             ]"
+            @contextmenu="(e) => handleContextMenu(e, msg)"
           >
             <div class="message-checkbox">
               <el-checkbox
@@ -146,29 +147,29 @@
               </el-icon>
             </div>
             <div class="message-content">
-              <div class="message-text">{{ msg.content }}</div>
+              <div class="message-text">
+                <span v-if="msg.status === 'thinking' && !msg.content" class="thinking-indicator">
+                  <span class="thinking-dot"></span>
+                  <span class="thinking-dot"></span>
+                  <span class="thinking-dot"></span>
+                  <span class="thinking-text">思考中...</span>
+                </span>
+                <template v-else>{{ msg.content }}</template>
+              </div>
               <div class="message-footer">
                 <span class="message-time">{{ formatTime(msg.createTime) }}</span>
-                <el-link
-                  type="danger"
-                  :underline="false"
-                  class="delete-message-btn"
-                  @click.stop="deleteMessage(msg.id)"
-                >
-                  <el-icon><Delete /></el-icon>
-                  删除
-                </el-link>
+                <div v-if="msg.role === 'assistant' && (msg.status === 'streaming' || msg.status === 'paused')" class="message-controls">
+                  <el-link
+                    type="primary"
+                    :underline="false"
+                    class="pause-btn"
+                    @click.stop="togglePauseMessage(msg)"
+                  >
+                    <el-icon><Pause v-if="msg.status === 'streaming'" /><Play v-else /></el-icon>
+                    {{ msg.status === 'streaming' ? '暂停' : '继续' }}
+                  </el-link>
+                </div>
               </div>
-            </div>
-          </div>
-
-          <!-- 加载动画 -->
-          <div v-if="loading" class="loading-item">
-            <div class="loading-content">
-              <el-icon class="loading-icon" :size="24" color="#667eea">
-                <Loading />
-              </el-icon>
-              <span>AI正在思考中...</span>
             </div>
           </div>
 
@@ -178,6 +179,24 @@
               <ChatDotRound />
             </el-icon>
             <p>开始与AI对话吧</p>
+          </div>
+        </div>
+
+        <!-- 右键菜单 -->
+        <div
+          v-if="showContextMenu"
+          class="context-menu"
+          :style="{ left: contextMenuPosition.x + 'px', top: contextMenuPosition.y + 'px' }"
+          @click.stop
+        >
+          <div class="context-menu-item" @click="toggleSelectFromMenu">
+            <el-icon><Check /></el-icon>
+            {{ selectedMessages.includes(contextMenuMessageId) ? '取消选择' : '选择' }}
+          </div>
+          <div class="context-menu-divider"></div>
+          <div class="context-menu-item danger" @click="deleteFromMenu">
+            <el-icon><Delete /></el-icon>
+            删除消息
           </div>
         </div>
 
@@ -231,6 +250,11 @@ const messageList = ref(null)
 // 流式输出相关
 const streamingContent = ref('')
 const isStreaming = ref(false)
+// 打字机速度（毫秒/字符，值越大越慢）
+const typingSpeed = ref(30)
+
+// 延迟函数
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 // 侧边栏收起状态
 const isCollapsed = ref(false)
 // 当前登录用户
@@ -239,10 +263,61 @@ const currentUser = ref(localStorage.getItem('username') || '用户')
 const chatContainer = ref(null)
 // 选中的消息ID列表（用于批量删除）
 const selectedMessages = ref([])
+// 右键菜单状态
+const showContextMenu = ref(false)
+const contextMenuPosition = ref({ x: 0, y: 0 })
+const contextMenuMessageId = ref(null)
+// 暂停输出状态
+const isPaused = ref(false)
 
 // 切换侧边栏收起/展开
 const toggleCollapse = () => {
   isCollapsed.value = !isCollapsed.value
+}
+
+// 右键菜单处理
+const handleContextMenu = (event, msg) => {
+  event.preventDefault()
+  contextMenuPosition.value = { x: event.clientX, y: event.clientY }
+  contextMenuMessageId.value = msg.id
+  showContextMenu.value = true
+}
+
+const closeContextMenu = () => {
+  showContextMenu.value = false
+}
+
+const toggleSelectFromMenu = () => {
+  if (contextMenuMessageId.value) {
+    const idx = selectedMessages.value.indexOf(contextMenuMessageId.value)
+    if (idx > -1) {
+      selectedMessages.value.splice(idx, 1)
+    } else {
+      selectedMessages.value.push(contextMenuMessageId.value)
+    }
+  }
+  closeContextMenu()
+}
+
+const deleteFromMenu = () => {
+  if (contextMenuMessageId.value) {
+    deleteMessage(contextMenuMessageId.value)
+  }
+  closeContextMenu()
+}
+
+// 暂停/继续输出
+const togglePause = () => {
+  isPaused.value = !isPaused.value
+}
+
+// 从消息上触发暂停/继续
+const togglePauseMessage = (msg) => {
+  if (msg.status === 'streaming') {
+    isPaused.value = true
+  } else if (msg.status === 'paused') {
+    isPaused.value = false
+  }
 }
 
 const currentConversation = computed(() => {
@@ -483,7 +558,9 @@ const sendMessageStream = async () => {
     conversationId: selectedConversation.value,
     role: 'assistant',
     content: '',
-    createTime: new Date().toISOString()
+    createTime: new Date().toISOString(),
+    status: 'thinking', // thinking, streaming, paused, done
+    isPaused: false
   }
   messages.value.push(aiMsgPlaceholder)
   const aiMsgIndex = messages.value.length - 1
@@ -494,10 +571,11 @@ const sendMessageStream = async () => {
   })
 
   // 辅助函数：通过数组索引赋值强制触发 Vue 响应式更新
-  const updateAiMessage = (content) => {
+  const updateAiMessage = (content, status) => {
     messages.value[aiMsgIndex] = {
       ...messages.value[aiMsgIndex],
-      content: content
+      content: content,
+      status: status || messages.value[aiMsgIndex].status
     }
   }
 
@@ -550,12 +628,43 @@ const sendMessageStream = async () => {
         for (const line of lines) {
           if (line.startsWith('data:')) {
             const parsedContent = line.slice(5).replace(/^\s/, '')
-            streamingContent.value += parsedContent
-            // 通过索引赋值强制触发 Vue 响应式更新
-            updateAiMessage(streamingContent.value)
-            nextTick(() => {
-              scrollToBottom()
-            })
+            
+            // 检查是否为错误消息
+            if (parsedContent.startsWith('{"error":')) {
+              try {
+                const errorData = JSON.parse(parsedContent)
+                ElMessage.error(`请求失败: ${errorData.error}`)
+                messages.value.splice(aiMsgIndex, 1)
+                return
+              } catch (e) {
+                // 不是有效的 JSON 错误，继续正常处理
+              }
+            }
+            
+            // 逐个字符添加延迟，实现打字机效果
+            for (const char of parsedContent) {
+              // 暂停检查
+              while (isPaused.value) {
+                messages.value[aiMsgIndex] = {
+                  ...messages.value[aiMsgIndex],
+                  status: 'paused'
+                }
+                await sleep(50)
+              }
+              // 首次收到内容，从 thinking 改为 streaming
+              if (streamingContent.value.length === 0) {
+                streamingContent.value += char
+                updateAiMessage(streamingContent.value, 'streaming')
+              } else {
+                streamingContent.value += char
+                updateAiMessage(streamingContent.value)
+              }
+              nextTick(() => {
+                scrollToBottom()
+              })
+              // 添加打字延迟
+              await sleep(typingSpeed.value)
+            }
           }
         }
       }
@@ -567,8 +676,12 @@ const sendMessageStream = async () => {
       for (const line of lines) {
         if (line.startsWith('data:')) {
           const parsedTailContent = line.slice(5).replace(/^\s/, '')
-          streamingContent.value += parsedTailContent
-          updateAiMessage(streamingContent.value)
+          // 逐个字符添加延迟
+          for (const char of parsedTailContent) {
+            streamingContent.value += char
+            updateAiMessage(streamingContent.value)
+            await sleep(typingSpeed.value)
+          }
         }
       }
     }
@@ -583,6 +696,14 @@ const sendMessageStream = async () => {
     messages.value.splice(aiMsgIndex, 1)
   } finally {
     isStreaming.value = false
+    isPaused.value = false
+    // 更新消息状态为 done
+    if (messages.value[aiMsgIndex]) {
+      messages.value[aiMsgIndex] = {
+        ...messages.value[aiMsgIndex],
+        status: 'done'
+      }
+    }
   }
 }
 
@@ -986,10 +1107,6 @@ const logout = () => {
   transition: opacity 0.2s;
 }
 
-.message-item:hover .message-checkbox {
-  opacity: 1;
-}
-
 .message-item.selected .message-checkbox {
   opacity: 1;
 }
@@ -1014,6 +1131,62 @@ const logout = () => {
   word-break: break-word;
 }
 
+/* 思考中指示器 */
+.thinking-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0;
+}
+
+.thinking-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #764ba2;
+  animation: thinking-bounce 1.4s infinite ease-in-out both;
+}
+
+.thinking-dot:nth-child(1) {
+  animation-delay: -0.32s;
+}
+
+.thinking-dot:nth-child(2) {
+  animation-delay: -0.16s;
+}
+
+@keyframes thinking-bounce {
+  0%, 80%, 100% {
+    transform: scale(0);
+  }
+  40% {
+    transform: scale(1);
+  }
+}
+
+.thinking-text {
+  font-size: 14px;
+  color: #999;
+  margin-left: 4px;
+}
+
+/* 消息控制按钮 */
+.message-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.pause-btn {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.pause-btn:hover {
+  background-color: rgba(118, 75, 162, 0.1);
+}
+
 .message-footer {
   display: flex;
   justify-content: space-between;
@@ -1031,26 +1204,7 @@ const logout = () => {
 }
 
 .delete-message-btn {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.7);
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-
-.message-item:hover .delete-message-btn {
-  opacity: 1;
-}
-
-.delete-message-btn:hover {
-  color: #fff;
-}
-
-.ai-message .delete-message-btn {
-  color: #999;
-}
-
-.ai-message .delete-message-btn:hover {
-  color: #f56c6c;
+  display: none;
 }
 
 .loading-item {
@@ -1122,5 +1276,46 @@ const logout = () => {
   font-size: 18px;
   font-weight: 500;
   color: #666;
+}
+
+/* 右键菜单样式 */
+.context-menu {
+  position: fixed;
+  min-width: 160px;
+  background: white;
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  z-index: 1000;
+  padding: 4px 0;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 14px;
+  color: #303133;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.context-menu-item:hover {
+  background-color: #f5f7fa;
+}
+
+.context-menu-item.danger {
+  color: #f56c6c;
+}
+
+.context-menu-item.danger:hover {
+  background-color: #fef0f0;
+}
+
+.context-menu-divider {
+  height: 1px;
+  background-color: #e8e8e8;
+  margin: 4px 0;
 }
 </style>

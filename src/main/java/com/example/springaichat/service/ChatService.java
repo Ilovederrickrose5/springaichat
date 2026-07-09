@@ -117,7 +117,7 @@ public class ChatService {
         }
 
         List<com.example.springaichat.entity.Message> messages = messageRepository.findAllById(messageIds);
-        
+
         if (messages.isEmpty()) {
             throw new RuntimeException("未找到任何消息");
         }
@@ -333,13 +333,34 @@ public class ChatService {
     }
 
     /**
-     * 流式调用AI模型
+     * 流式调用AI模型（带重试）
      */
     private Flux<String> streamAiResponse(List<Message> chatHistory,
             String userContent, Long conversationId) {
+        int maxRetries = 2;
+        java.util.concurrent.atomic.AtomicInteger retryCount = new java.util.concurrent.atomic.AtomicInteger(0);
+
+        return doStreamAiResponse(chatHistory, userContent, conversationId)
+                .onErrorResume(error -> {
+                    int currentRetry = retryCount.incrementAndGet();
+                    if (currentRetry <= maxRetries && isRetryableError(error)) {
+                        logger.warn("streamAiResponse retry {}/{}, conversationId={}",
+                                currentRetry, maxRetries, conversationId);
+                        return doStreamAiResponse(chatHistory, userContent, conversationId);
+                    }
+                    logger.error("streamAiResponse failed after {} retries, conversationId={}",
+                            currentRetry, conversationId, error);
+                    return Flux.error(error);
+                });
+    }
+
+    /**
+     * 实际执行流式调用
+     */
+    private Flux<String> doStreamAiResponse(List<Message> chatHistory,
+            String userContent, Long conversationId) {
         StringBuilder fullResponse = new StringBuilder();
 
-        // 先构建 prompt（此时 chatHistory 不包含当前用户消息）
         Flux<String> responseFlux = chatClient.prompt()
                 .messages(buildMessages(chatHistory, userContent))
                 .stream()
@@ -360,10 +381,23 @@ public class ChatService {
                     }
                 });
 
-        // 构建 prompt 后再将用户消息加入历史，供后续上下文记忆使用
         chatHistory.add(new UserMessage(userContent));
 
         return responseFlux;
+    }
+
+    /**
+     * 判断是否为可重试的错误
+     */
+    private boolean isRetryableError(Throwable error) {
+        String message = error.getMessage();
+        return message != null && (message.contains("Connection reset") ||
+                message.contains("connect timed out") ||
+                message.contains("timeout") ||
+                message.contains("429") ||
+                message.contains("502") ||
+                message.contains("503") ||
+                message.contains("504"));
     }
 
     /**
