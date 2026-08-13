@@ -24,8 +24,13 @@ const router = createRouter({
   routes
 })
 
+// 读 accessToken：优先新字段 accessToken，兼容旧字段 token
+function getAccessToken() {
+  return localStorage.getItem('accessToken') || localStorage.getItem('token') || ''
+}
+
 router.beforeEach((to, from, next) => {
-  const token = localStorage.getItem('token')
+  const token = getAccessToken()
 
   if (to.path === '/login') {
     if (token) {

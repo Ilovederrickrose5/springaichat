@@ -41,7 +41,9 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR, DispatcherType.FORWARD).permitAll()
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                        .requestMatchers("/api/auth/**").permitAll()
+                        // 登录 / 注册 / 刷新 Token 三接口匿名访问；/logout 必须是登录态（要根据登录态清该用户的 refresh）
+                        .requestMatchers("/api/auth/login", "/api/auth/register", "/api/auth/refresh").permitAll()
+                        .requestMatchers("/api/auth/logout").authenticated()
                         .requestMatchers("/api/chat/**").authenticated()
                         .anyRequest().authenticated())
                 .exceptionHandling(ex -> ex

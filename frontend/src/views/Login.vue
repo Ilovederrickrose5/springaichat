@@ -92,7 +92,7 @@
 
 <script setup>
 import { ref } from 'vue'
-import axios from '../utils/axios'
+import axios, { saveAuthTokens } from '../utils/axios'
 import router from '../router'
 
 const username = ref('')
@@ -120,9 +120,7 @@ const handleLogin = async () => {
     })
 
     if (response.success) {
-      localStorage.setItem('token', response.token)
-      localStorage.setItem('userId', response.userId)
-      localStorage.setItem('username', response.username)
+      saveAuthTokens(response)
       await router.push('/chat')
     } else {
       alert(response.message || '登录失败')

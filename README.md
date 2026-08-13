@@ -4,7 +4,7 @@
 
 ## 功能特性
 
-- ✅ 用户注册与登录（JWT 认证）
+- ✅ 用户注册与登录（JWT 双 Token 方案：access 30 分钟 + refresh 7 天，支持无感刷新 + 登出黑名单）
 - ✅ 智能对话交互（支持阿里云百炼 qwen-turbo 模型）
 - ✅ 多轮对话历史管理（按用户会话隔离）
 - ✅ 对话上下文保持（Redis 缓存 + 双重限制）
@@ -107,7 +107,9 @@ start-all.bat
 | 接口 | 方法 | 说明 |
 |------|------|------|
 | `/api/auth/register` | POST | 用户注册 |
-| `/api/auth/login` | POST | 用户登录，返回 JWT |
+| `/api/auth/login` | POST | 用户登录，返回 `accessToken + refreshToken + expiresIn`（兼容旧字段 `token`） |
+| `/api/auth/refresh` | POST | 用 refresh 换取新的 access + 新 refresh（Token Rotation） |
+| `/api/auth/logout` | POST | 登出（需登录态）：access 拉黑 + 删除绑定的 refresh |
 | `/api/chat/conversations` | GET | 获取当前用户的会话列表（按更新时间倒序） |
 | `/api/chat/conversations` | POST | 创建会话（title 可选，默认「新对话」） |
 | `/api/chat/conversations/{id}` | GET | 获取单个会话详情（验证归属） |

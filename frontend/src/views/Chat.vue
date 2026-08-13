@@ -235,7 +235,7 @@
 <script setup>
 import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import axios from '@/utils/axios'
+import axios, { clearAllAuth, getAccessToken } from '@/utils/axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
 // Element Plus 图标已在 main.js 中全局注册，模板中可直接使用，无需 import
 
@@ -580,8 +580,8 @@ const sendMessageStream = async () => {
   }
 
   try {
-    // 获取 JWT token
-    const token = localStorage.getItem('token')
+    // 获取 JWT token（使用统一的 accessToken 读取，兼容老 token 字段）
+    const token = getAccessToken()
     const requestHeaders = {
       'Accept': 'text/event-stream',
       'Content-Type': 'application/json',
@@ -600,6 +600,43 @@ const sendMessageStream = async () => {
 
     if (!response.ok) {
       const errorText = await response.text()
+      // SSE 请求 401：accessToken 过期了，尝试 refresh 一次；成功就提示用户重发，失败再清 token 跳登录
+      if (response.status === 401) {
+        try {
+          const refreshToken = localStorage.getItem('refreshToken')
+          if (refreshToken) {
+            const refreshRes = await fetch('http://localhost:8080/api/auth/refresh', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ refreshToken })
+            })
+            if (refreshRes.ok) {
+              const refreshBody = await refreshRes.json()
+              if (refreshBody && refreshBody.success) {
+                // 保存新双 token 后，让用户重新发消息（SSE 流式重发需要重新构造请求太复杂，这里选择友好提示）
+                if (refreshBody.accessToken) {
+                  localStorage.setItem('accessToken', refreshBody.accessToken)
+                  localStorage.setItem('token', refreshBody.accessToken)
+                }
+                if (refreshBody.refreshToken) {
+                  localStorage.setItem('refreshToken', refreshBody.refreshToken)
+                }
+                messages.value.splice(aiMsgIndex, 1)
+                ElMessage.warning('登录状态已刷新，请重新发送消息')
+                return
+              }
+            }
+          }
+        } catch (se) {
+          console.warn('SSE inline refresh failed', se)
+        }
+        // refresh 没成功 → 清 token 跳登录
+        clearAllAuth()
+        messages.value.splice(aiMsgIndex, 1)
+        router.push('/login')
+        ElMessage.warning('登录已过期，请重新登录')
+        return
+      }
       throw new Error(`请求失败: ${response.status} ${errorText}`)
     }
 
@@ -759,7 +796,7 @@ const formatTime = (timeStr) => {
   return date.toLocaleDateString('zh-CN')
 }
 
-// 退出登录
+// 退出登录：先通知后端拉黑 access + 删除 refresh，再清本地
 const logout = () => {
   ElMessageBox.confirm(
     '确定要退出登录吗？',
@@ -769,11 +806,16 @@ const logout = () => {
       cancelButtonText: '取消',
       type: 'info'
     }
-  ).then(() => {
-    localStorage.removeItem('token')
-    localStorage.removeItem('userId')
-    localStorage.removeItem('username')
-    router.push('/')
+  ).then(async () => {
+    try {
+      await axios.post('/auth/logout')
+    } catch (e) {
+      // 后端即使报错，也按「本地清理 + 退出」处理
+      console.warn('logout api call failed, continue to clear local state', e)
+    }
+    clearAllAuth()
+    currentUser.value = '用户'
+    router.push('/login')
     ElMessage.success('已退出登录')
   }).catch(() => {
     // 用户取消
