@@ -2,8 +2,8 @@
   <div class="login-container">
     <div class="login-box">
       <div class="login-header">
-        <h1>智能聊天助手</h1>
-        <p>基于 Spring AI 构建</p>
+        <h1>企智通</h1>
+        <p>企业智能知识问答助手</p>
       </div>
 
       <div class="login-form">

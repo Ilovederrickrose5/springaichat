@@ -3,8 +3,8 @@
 ## 1. 项目基础概述
 
 ### 1.1 项目信息
-- **项目名称**: springaichat
-- **项目用途**: Spring Boot + Spring AI 智能对话助手，支持多用户会话隔离、历史记录、上下文记忆和流式输出
+- **项目名称**: 企智通 (EnterpriseRAG)
+- **项目用途**: Spring Boot + Spring AI 企业智能知识问答助手，支持多用户会话隔离、历史记录、上下文记忆、流式输出和 RAG 检索
 - **技术栈**:
   - Java 17
   - Spring Boot 3.2.10
@@ -19,14 +19,16 @@
   - `mysql-aichat`: MySQL数据库访问
   - `filesystem`: 文件系统访问
   - `codegraph`: 代码分析
+  - `browser-console`: 浏览器控制台日志
 
 ### 1.2 项目核心业务目标
 1. 多用户认证与授权（注册、登录、JWT令牌）
 2. 会话管理（创建、查询、删除会话）
 3. 消息交互（发送消息、接收AI响应）
-4. SSE流式输出（打字机效果实时响应）
-5. 消息管理（单条删除、批量删除）
-6. 上下文记忆（Redis缓存聊天历史）
+4. SSE流式输出（打字机效果实时响应，支持暂停/继续）
+5. 消息管理（单条删除、批量删除、右键菜单操作）
+6. 上下文记忆（Redis缓存聊天历史，支持缓存预热、双重限制）
+7. 用户个人信息管理（昵称、邮箱、手机、头像、性别、简介）
 
 ---
 
@@ -35,7 +37,7 @@
 ### 2.1 所有数据表清单
 | 表名 | 业务用途 |
 |------|----------|
-| `user` | 用户信息表，存储用户账号密码 |
+| `user` | 用户信息表，存储用户账号密码及个人资料 |
 | `conversation` | 会话信息表，存储用户的聊天会话 |
 | `message` | 消息信息表，存储会话中的消息内容 |
 
@@ -47,10 +49,17 @@
 |--------|------|----------|--------|--------|------|
 | `id` | bigint | NO | PRIMARY KEY | - | 用户ID，自增主键 |
 | `username` | varchar(50) | NO | UNIQUE KEY | - | 用户名，唯一 |
-| `password` | varchar(100) | NO | - | - | 密码（BCrypt加密） |
+| `password` | varchar(255) | NO | - | - | 密码（BCrypt加密） |
+| `nickname` | varchar(50) | YES | - | - | 用户昵称 |
+| `email` | varchar(100) | YES | - | - | 邮箱地址 |
+| `phone` | varchar(20) | YES | - | - | 手机号码 |
+| `avatar` | varchar(500) | YES | - | - | 头像URL |
+| `gender` | varchar(10) | YES | - | - | 性别（male/female/secret） |
+| `bio` | text | YES | - | - | 个人简介 |
 | `create_time` | datetime | YES | - | CURRENT_TIMESTAMP | 创建时间 |
+| `update_time` | datetime | YES | - | CURRENT_TIMESTAMP on update | 更新时间 |
 
-**业务作用**: 存储系统用户的基本信息，用于认证和授权。
+**业务作用**: 存储系统用户的基本信息和个人资料，用于认证、授权和展示。
 
 ---
 
@@ -112,6 +121,16 @@ src/main/java/com/example/springaichat/
 ├── service/          # 业务逻辑层（认证服务、聊天服务）
 ├── util/             # 工具类（JWT工具）
 └── SpringAiChatApplication.java  # 启动类
+
+frontend/src/
+├── api/              # API接口封装
+├── components/       # 组件（ProfileDialog）
+├── router/           # 路由配置
+├── utils/            # 工具类（axios配置）
+├── views/            # 页面（Chat、Login）
+├── App.vue           # 根组件
+├── main.js           # 入口文件
+└── style.css         # 全局样式
 ```
 
 ### 3.2 各层职责说明
@@ -119,10 +138,10 @@ src/main/java/com/example/springaichat/
 | 层级 | 包名 | 核心类 | 职责 |
 |------|------|--------|------|
 | 控制层 | controller | `AuthController`、`ChatController` | 处理HTTP请求，参数校验，调用Service |
-| 业务层 | service | `AuthService`、`ChatService` | 核心业务逻辑，事务管理，AI调用 |
+| 业务层 | service | `AuthService`、`ChatService` | 核心业务逻辑，事务管理，AI调用，缓存管理 |
 | 数据层 | repository | `UserRepository`、`ConversationRepository`、`MessageRepository` | 数据库CRUD操作 |
 | 实体层 | entity | `User`、`Conversation`、`Message` | JPA实体，映射数据库表 |
-| 传输层 | dto | `LoginRequest`、`MessageRequest`、`MessageResponse` 等 | 请求/响应数据结构 |
+| 传输层 | dto | `LoginRequest`、`LoginResponse`、`MessageRequest`、`MessageResponse`、`RegisterRequest`、`BatchDeleteRequest` | 请求/响应数据结构 |
 | 配置层 | config | `SecurityConfig`、`JwtAuthenticationFilter`、`CorsConfig`、`RedisConfig`、`OpenAiChatConfig` | Spring配置、安全、跨域、缓存、AI模型 |
 | 工具层 | util | `JwtUtil` | JWT令牌生成与验证 |
 | 异常层 | exception | `GlobalExceptionHandler` | 全局异常处理 |
@@ -142,6 +161,7 @@ src/main/java/com/example/springaichat/
 | `jwt.expiration` | JWT过期时间：86400000ms（24小时） |
 | `chat.max-history-size` | 最大历史消息数：20 |
 | `chat.max-message-length` | 最大消息长度：4000字符 |
+| `chat.max-tokens` | 最大Token数：4096（用于上下文限制） |
 | `chat.cache-expire-hours` | Redis缓存过期时间：24小时 |
 
 ---
@@ -157,7 +177,7 @@ src/main/java/com/example/springaichat/
     │              │              │
     │              │              └──→ JwtUtil (生成令牌)
     │              │
-    │              └──→ 返回 JWT Token
+    │              └──→ 返回 JWT Token + 用户基本信息
     │
     └──→ 前端存储Token，后续请求携带Authorization头
 ```
@@ -197,15 +217,16 @@ src/main/java/com/example/springaichat/
                     │
                     ├── 1. 验证会话归属
                     ├── 2. 保存用户消息到数据库
-                    ├── 3. 获取Redis缓存的聊天历史
-                    ├── 4. 调用AI模型stream方法
-                    ├── 5. Flux流式返回内容片段
+                    ├── 3. 获取Redis缓存的聊天历史（缓存未命中则从数据库加载并预热）
+                    ├── 4. 构建消息（SystemMessage + 历史 + 当前消息）
+                    ├── 5. 调用AI模型stream方法（带重试机制）
+                    ├── 6. Flux流式返回内容片段
                     │
                     ▼
-              前端EventSource接收 → 逐字追加显示（打字机效果）
+              前端fetch接收 → 逐字追加显示（打字机效果，可暂停/继续）
                     │
                     ▼
-              流结束 → 保存完整AI响应到数据库
+              流结束 → 保存完整AI响应到数据库 → 更新Redis缓存（双重限制：消息数量+Token数量）
 ```
 
 **接口链路**:
@@ -218,7 +239,8 @@ src/main/java/com/example/springaichat/
 ```
 用户请求删除 → ChatController → ChatService → MessageRepository → MySQL
                     │                │                    │
-                    │                └──→ 验证消息归属（会话→用户）
+                    │                ├──→ 验证消息归属（会话→用户）
+                    │                └──→ 删除Redis缓存（带重试机制）
                     │
                     ▼
               返回删除结果
@@ -228,15 +250,86 @@ src/main/java/com/example/springaichat/
 - `DELETE /api/chat/messages/{id}` - 删除单条消息
 - `POST /api/chat/messages/batch-delete` - 批量删除消息
 
+### 4.5 用户资料管理流程
+
+```
+用户查看/修改资料 → UserController → UserService → UserRepository → MySQL
+                    │                    │                    │
+                    │                    └──→ 更新用户信息
+                    │
+                    ▼
+              返回用户资料或更新结果
+```
+
+**接口链路**:
+- `GET /api/user/profile` - 获取用户资料
+- `PUT /api/user/profile` - 更新用户资料
+
 ---
 
-## 5. MCP工具能力说明
+## 5. 上下文缓存机制
 
-### 5.1 filesystem（文件系统服务）
+### 5.1 缓存策略
+
+项目采用 **Cache-Aside 模式**，MySQL 作为唯一数据源，Redis 作为缓存层。
+
+### 5.2 缓存分层架构
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      请求流程                                │
+├─────────────────────────────────────────────────────────────┤
+│  用户发送消息                                                │
+│       │                                                     │
+│       ▼                                                     │
+│  getOrCreateChatHistory(conversationId)                     │
+│       │                                                     │
+│       ├── Redis 命中 → 直接返回缓存的历史列表                 │
+│       │                                                     │
+│       └── Redis 未命中 → 从数据库加载 → 预热到Redis → 返回    │
+│       │                                                     │
+│       ▼                                                     │
+│  trimChatHistory() 双重限制                                 │
+│       │                                                     │
+│       ├── 消息数量限制（最多20条）                           │
+│       └── Token数量限制（最多4096）                         │
+│       │                                                     │
+│       ▼                                                     │
+│  buildMessages() → 调用AI模型                               │
+│       │                                                     │
+│       ▼                                                     │
+│  saveChatHistory() → 更新Redis缓存（24h过期）               │
+│  saveAiResponse() → 持久化到MySQL                           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 5.3 缓存一致性保障
+
+| 保障机制 | 说明 |
+|---------|------|
+| **重试机制** | 删除缓存失败时自动重试2次，间隔100ms/200ms |
+| **缓存过期** | 24小时自动过期，兜底保障最终一致性 |
+| **读时回源** | Redis读取失败时从数据库重新加载并覆盖缓存 |
+| **写时覆盖** | 下次发送消息时自动覆盖缓存 |
+
+### 5.4 缓存删除场景
+
+| 场景 | 触发条件 |
+|------|---------|
+| 删除单条消息 | `DELETE /api/chat/messages/{id}` |
+| 批量删除消息 | `POST /api/chat/messages/batch-delete` |
+| 删除会话 | `DELETE /api/chat/conversations/{id}` |
+| 缓存过期 | 24小时自动过期 |
+
+---
+
+## 6. MCP工具能力说明
+
+### 6.1 filesystem（文件系统服务）
 - **作用**: 读取、修改项目文件
 - **约束**: 仅访问当前项目目录 `${workspaceFolder}`，禁止跨项目访问
 
-### 5.2 mysql-aichat（MySQL数据库服务）
+### 6.2 mysql-aichat（MySQL数据库服务）
 - **作用**: 访问项目专属数据库 `ai_chat_db`
 - **连接配置**:
   - 主机：127.0.0.1
@@ -245,31 +338,35 @@ src/main/java/com/example/springaichat/
   - 数据库：ai_chat_db
 - **约束**: 仅操作本项目数据库，不连接其他项目数据库
 
-### 5.3 codegraph（代码分析服务）
+### 6.3 codegraph（代码分析服务）
 - **作用**: 代码符号搜索、调用链分析、代码结构浏览
 - **约束**: 仅分析当前项目代码
 
+### 6.4 browser-console（浏览器控制台服务）
+- **作用**: 获取浏览器控制台日志、网络请求信息
+- **约束**: 需连接到运行中的浏览器实例
+
 ---
 
-## 6. AI代理行为约束规则
+## 7. AI代理行为约束规则
 
-### 6.1 文件访问约束
+### 7.1 文件访问约束
 1. 仅允许读取、修改当前项目 `springaichat` 内的代码文件
 2. 禁止跨目录访问其他项目文件
 3. 修改代码前先查阅 AGENTS.md 确认业务逻辑和架构
 
-### 6.2 数据库操作约束
+### 7.2 数据库操作约束
 1. 仅使用 `mysql-aichat` 服务连接本项目数据库 `ai_chat_db`
 2. 禁止连接其他项目的数据库
 3. 数据库操作需遵循原有表结构和关联关系
 
-### 6.3 代码修改约束
+### 7.3 代码修改约束
 1. 所有代码修改遵循项目原有编码规范
 2. 保持分层架构清晰，不跨层调用
 3. 新增功能需与现有模块风格一致
 4. 修改前需验证不破坏现有功能
 
-### 6.4 安全约束
+### 7.4 安全约束
 1. 禁止在代码中硬编码敏感信息（密码、API Key）
 2. 敏感配置需通过环境变量注入
 3. 遵循 Spring Security 权限控制规则

@@ -225,8 +225,8 @@
         <el-icon :size="80" color="#ccc">
           <ChatLineRound />
         </el-icon>
-        <h3>选择一个会话开始聊天</h3>
-        <p>或创建新的会话</p>
+        <h3>你好，我是企智通</h3>
+        <p>你的企业知识助手，开始新对话吧</p>
       </div>
     </div>
   </div>
@@ -251,7 +251,7 @@ const messageList = ref(null)
 const streamingContent = ref('')
 const isStreaming = ref(false)
 // 打字机速度（毫秒/字符，值越大越慢）
-const typingSpeed = ref(30)
+const typingSpeed = ref(10)
 
 // 延迟函数
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))

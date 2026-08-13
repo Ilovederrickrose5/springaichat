@@ -3,18 +3,21 @@ package com.example.springaichat.config;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.QuestionAnswerAdvisor;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
+import org.springframework.beans.factory.annotation.Autowired;
 
-/**
- * Spring AI OpenAI 配置类
- * 配置阿里云百炼（DashScope）OpenAI 兼容接口
- */
+import java.util.List;
+
 @Configuration
 public class OpenAiChatConfig {
 
@@ -32,9 +35,6 @@ public class OpenAiChatConfig {
   @Value("${spring.ai.openai.chat.options.temperature:0.7}")
   private Double temperature;
 
-  /**
-   * 创建 OpenAI API 客户端
-   */
   @Bean
   public OpenAiApi openAiApi() {
     String normalizedBaseUrl = normalizeBaseUrl(baseUrl);
@@ -42,34 +42,62 @@ public class OpenAiChatConfig {
     return new OpenAiApi(normalizedBaseUrl, apiKey);
   }
 
-  /**
-   * 创建聊天模型配置
-   */
   @Bean
   public OpenAiChatOptions chatOptions() {
     return OpenAiChatOptions.builder()
         .withModel(model)
         .withTemperature(temperature)
         .withMaxTokens(2048)
+        .withTopP(0.9)
+        .withFrequencyPenalty(0.0)
+        .withPresencePenalty(0.0)
         .build();
   }
 
-  /**
-   * 创建 OpenAiChatModel
-   */
   @Bean
   public OpenAiChatModel openAiChatModel(OpenAiApi openAiApi, OpenAiChatOptions chatOptions) {
     return new OpenAiChatModel(openAiApi, chatOptions);
   }
 
-  /**
-   * 创建 ChatClient.Builder
-   */
   @Bean
-  public ChatClient.Builder chatClientBuilder(OpenAiChatModel chatModel) {
-    return ChatClient.builder(chatModel)
-        .defaultOptions(chatOptions())
-        .defaultAdvisors(new SimpleLoggerAdvisor());
+  @Primary
+  public ChatClient.Builder chatClientBuilder(OpenAiChatModel chatModel,
+          @Autowired(required = false) QuestionAnswerAdvisor questionAnswerAdvisor) {
+    ChatClient.Builder builder = ChatClient.builder(chatModel)
+        .defaultOptions(chatOptions());
+
+    if (questionAnswerAdvisor != null) {
+      builder.defaultAdvisors(List.of(new SimpleLoggerAdvisor(), questionAnswerAdvisor));
+      logger.info("RAG enabled, using QuestionAnswerAdvisor with SimpleLoggerAdvisor");
+    } else {
+      builder.defaultAdvisors(new SimpleLoggerAdvisor());
+      logger.info("RAG disabled, using only SimpleLoggerAdvisor");
+    }
+
+    return builder;
+  }
+
+  @Bean
+  public ApplicationRunner aiConnectionWarmup(ChatClient.Builder chatClientBuilder) {
+    return args -> {
+      logger.info("Starting AI connection warmup...");
+      long startTime = System.currentTimeMillis();
+
+      try {
+        ChatClient chatClient = chatClientBuilder.build();
+        chatClient.prompt()
+            .messages(new UserMessage("ping"))
+            .stream()
+            .content()
+            .collectList()
+            .block();
+
+        long duration = System.currentTimeMillis() - startTime;
+        logger.info("AI connection warmup completed in {}ms", duration);
+      } catch (Exception e) {
+        logger.warn("AI connection warmup failed (will retry on first request): {}", e.getMessage());
+      }
+    };
   }
 
   private String normalizeBaseUrl(String rawBaseUrl) {

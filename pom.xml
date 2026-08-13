@@ -12,10 +12,10 @@
     </parent>
     
     <groupId>com.example</groupId>
-    <artifactId>springaichat</artifactId>
+    <artifactId>enterprise-rag</artifactId>
     <version>1.0.0</version>
-    <name>springaichat</name>
-    <description>Spring Boot + Spring AI Intelligent Chat Assistant</description>
+    <name>企智通</name>
+    <description>企业智能知识问答助手</description>
     
     <properties>
         <java.version>17</java.version>
@@ -61,10 +61,17 @@
             <version>${spring-ai.version}</version>
         </dependency>
         
-        <!-- Spring AI OpenAI -->
+        <!-- Spring AI OpenAI Starter -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-openai</artifactId>
+            <artifactId>spring-ai-openai-spring-boot-starter</artifactId>
+            <version>${spring-ai.version}</version>
+        </dependency>
+        
+        <!-- Spring AI Redis Vector Store Starter -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-redis-store-spring-boot-starter</artifactId>
             <version>${spring-ai.version}</version>
         </dependency>
         
