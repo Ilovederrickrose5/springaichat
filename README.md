@@ -150,13 +150,14 @@ enterprise-rag/
 │   │   ├── Conversation                # id / userId / title / createTime / updateTime
 │   │   └── Message                     # id / conversationId / role / content / createTime
 │   ├── dto/
-│   │   ├── LoginRequest / LoginResponse
+│   │   ├── LoginRequest / LoginResponse  # LoginResponse 含 accessToken/refreshToken/expiresIn（兼容旧 token 字段）
+│   │   ├── RefreshTokenRequest
 │   │   ├── RegisterRequest
 │   │   ├── MessageRequest / MessageResponse
 │   │   ├── ConversationResponse
 │   │   └── BatchDeleteRequest
 │   ├── exception/  GlobalExceptionHandler
-│   ├── util/       JwtUtil
+│   ├── util/       JwtUtil              # 双 Token：type 声明 + jti 指纹 + 独立过期时间
 │   └── SpringAiChatApplication.java
 ├── src/main/resources/
 │   ├── application.properties          # 应用主配置
@@ -216,9 +217,12 @@ spring.ai.vectorstore.redis.index=chat_knowledge_index
 spring.ai.vectorstore.redis.initialize-schema=true
 spring.ai.vectorstore.redis.prefix=rag:vector:
 
-# JWT
+# JWT（双 Token 方案）
 jwt.secret=${JWT_SECRET:your-production-secret-key-must-be-at-least-32-characters-long}
-jwt.expiration=86400000   # 24h
+jwt.access-expiration=1800000          # access Token：30 分钟
+jwt.refresh-expiration=604800000        # refresh Token：7 天
+jwt.redis.refresh-prefix=jwt:refresh:   # Redis 存 refresh Token（按 username 绑定）
+jwt.redis.blacklist-prefix=jwt:blacklist:  # Redis 存登出后 access 的 jti 黑名单（TTL = 剩余有效期）
 
 # 聊天上下文
 chat.max-history-size=20
@@ -269,6 +273,37 @@ rag.knowledge.default-tenant=asset
 5. **存储**：写入 Redis Vector Store，RediSearch 索引名 `chat_knowledge_index`，Key 前缀 `rag:vector:`
 6. **检索**：用户提问时 `RedisVectorStore.similaritySearch` 检索，topK=3，相似度阈值=0.1，并按 `tenant == 'asset'` 过滤
 7. **生成**：检索到的文档片段拼进 SystemMessage，要求模型回答必须基于参考资料，不能编造；无检索结果时退回纯模型回答
+
+### JWT 双 Token 认证方案
+
+原 24h 单 Token 已升级为「access + refresh」双 Token 机制：
+
+| Token | 有效期 | 作用 | 存储位置 |
+|---|---|---|---|
+| access | 30 分钟 | 调用业务接口的「短期凭证」 | 前端 localStorage `accessToken`，请求头 `Authorization: Bearer xxx` |
+| refresh | 7 天 | 只用来「换新 access」，绝不允许直接调业务接口 | 前端 localStorage `refreshToken` + 后端 Redis（`jwt:refresh:{username}`） |
+
+**安全机制**：
+1. **类型隔离**：Token 内部带 `type=access|refresh` 声明，JwtAuthenticationFilter 显式拒绝拿 refresh 调 `/api/chat/**`
+2. **Token Rotation**：每次 `/api/auth/refresh` 成功都会**生成新的 refresh Token** 覆盖 Redis 绑定，旧 refresh 立即失效（防窃取后反复使用）
+3. **并发登录踢旧**：同一用户重新登录，Redis `jwt:refresh:{username}` 覆盖旧值 → 旧端 refresh 必失败
+4. **登出双销毁**：`/api/auth/logout` 执行两步：
+   - 删除该 username 绑定的 refresh Token（后续 refresh 必失败）
+   - 该 access 的 `jti` 写进 Redis 黑名单，TTL = 该 Token 剩余有效期（30 分钟内即使 access 未过期也作废）
+5. **Redis 故障兜底**：黑名单查询失败时「保守放行」（比全站登不上更可接受）；refresh/删除失败返回明确错误码
+
+**前端无感刷新流程**：
+```
+业务请求 → 后端返回 401
+   │
+   ▼
+有 refreshToken？
+   ├── 否 → 清本地 → 跳 /login
+   └── 是 → isRefreshing 锁，POST /api/auth/refresh
+              ├── 成功 → 存新双 token → 重放失败请求 + 队列里并发的失败请求
+              └── 失败 → 清本地 → 跳 /login
+```
+SSE fetch 401 同样在 Chat.vue 里做了 inline refresh 兜底（成功提示用户重发，失败跳登录）。
 
 ### 业务层数据隔离
 

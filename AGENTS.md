@@ -10,9 +10,9 @@
   - Java 17
   - Spring Boot 3.2.10
   - Spring AI 1.0.0-M4
-  - Spring Security + JWT（无状态认证）
+  - Spring Security + JWT 双 Token 方案（access 30min + refresh 7d + Redis 黑名单）
   - Spring Data JPA + MySQL 8.0+（持久化唯一数据源）
-  - Spring Data Redis + Redis 8.0+（聊天上下文缓存 + 向量存储共用）
+  - Spring Data Redis + Redis 8.0+（聊天上下文缓存 + 向量存储 + Token 存储 共用）
   - Redis Vector Store / RediSearch（余弦相似度向量检索）
   - Vue 3 + Vite + Element Plus（前端）
   - Maven 构建工具
@@ -23,7 +23,7 @@
   - `browser-console`: 运行中浏览器控制台与网络请求日志
 
 ### 1.2 项目核心业务目标（已实现）
-1. 用户注册 / 登录（BCrypt 密码 + JWT 令牌）
+1. 用户注册 / 登录 / 刷新 / 登出（BCrypt + JWT 双 Token + Redis refresh 绑定 + access 黑名单）
 2. 会话管理（创建、列表、详情、删除；按 userId 隔离）
 3. 消息同步发送 + SSE / NDJSON 流式输出
 4. 打字机效果 + AI 气泡内「暂停/继续」控制
@@ -102,14 +102,15 @@ user (1) ──(user_id)── (*) conversation (1) ──(conversation_id)─�
 src/main/java/com/example/springaichat/
 ├── config/           # 6 个配置类
 │   ├── SecurityConfig
-│   ├── JwtAuthenticationFilter
+│   ├── JwtAuthenticationFilter     # 额外：type 必须是 access + jti 黑名单校验
 │   ├── CorsConfig
 │   ├── RedisConfig
 │   ├── OpenAiChatConfig   # ChatClient @Primary Bean (qwen-turbo)
 │   └── RagConfig          # VectorStore + QuestionAnswerAdvisor (@ConditionalOnProperty rag.enabled)
-├── controller/       # AuthController、ChatController（含 SSE + NDJSON 两种流式）
-├── dto/              # 7 个 DTO
-│   ├── LoginRequest / LoginResponse
+├── controller/       # AuthController（register/login/refresh/logout）、ChatController（含 SSE + NDJSON）
+├── dto/              # 8 个 DTO
+│   ├── LoginRequest / LoginResponse  # LoginResponse: token/accessToken/refreshToken/expiresIn 兼容
+│   ├── RefreshTokenRequest           # POST /api/auth/refresh body
 │   ├── RegisterRequest
 │   ├── MessageRequest / MessageResponse
 │   ├── ConversationResponse
@@ -117,20 +118,22 @@ src/main/java/com/example/springaichat/
 ├── entity/           # User、Conversation、Message
 ├── exception/        # GlobalExceptionHandler
 ├── repository/       # UserRepository、ConversationRepository、MessageRepository
-├── service/          # 3 个 Service
-│   ├── AuthService         # 注册/登录 + BCrypt + JWT 签发
+├── service/          # 4 个 Service
+│   ├── AuthService         # 注册/登录(双Token签发)/refresh(rotation)/logout
+│   ├── TokenStoreService   # Redis：refresh(username绑定) + access jti 黑名单 TTL=剩余有效期
 │   ├── ChatService         # 核心：会话/消息 CRUD + 缓存 + 流式响应（异步落库 + 重试 + RAG）
 │   └── KnowledgeBaseService # 启动加载知识库 + TokenTextSplitter + 向量存储 + Hash 去重
-├── util/             # JwtUtil（生成 / 解析 / 校验签名与过期）
+├── util/             # JwtUtil（生成 access/refresh、type+jti 声明、解析、按类型校验）
 └── SpringAiChatApplication.java
 
 frontend/src/
 ├── api/config.js
-├── router/index.js      # / → Login.vue ; /chat → Chat.vue (路由守卫)
-├── utils/axios.js       # Axios 实例 + Authorization 拦截器
+├── router/index.js      # / → Login.vue ; /chat → Chat.vue (路由守卫，优先读 accessToken 兼容 token)
+├── utils/axios.js       # Axios 实例 + Authorization 拦截器 + 401 自动 refresh（队列并发锁 + token rotation 更新）
+│                        # 导出 saveAuthTokens / clearAllAuth / getAccessToken 等工具函数
 ├── views/
-│   ├── Chat.vue         # SSE 流 / 打字机 10ms / 暂停 / 右键菜单 / 批量删除
-│   └── Login.vue        # 登录 + 注册 Tab
+│   ├── Chat.vue         # SSE 流 / 打字机 10ms / 暂停 / 右键菜单 / 批量删除 / logout 先调后端 /api/auth/logout
+│   └── Login.vue        # 登录(调用 saveAuthTokens 存双token) + 注册 Tab
 ├── App.vue
 ├── main.js
 └── style.css
@@ -141,12 +144,12 @@ frontend/src/
 | 层级 | 包 | 核心类 | 职责 |
 |------|-----|--------|------|
 | 控制层 | controller | AuthController / ChatController | HTTP 参数校验、注入当前用户、调用 Service、统一响应结构 |
-| 业务层 | service | AuthService / ChatService / KnowledgeBaseService | 核心业务、数据归属校验、异步落库、AI 调用、缓存操作、RAG 编排 |
+| 业务层 | service | AuthService / TokenStoreService / ChatService / KnowledgeBaseService | 核心业务、双 Token 存储与黑名单、数据归属校验、异步落库、AI 调用、缓存操作、RAG 编排 |
 | 数据层 | repository | UserRepository / ConversationRepository / MessageRepository | JPA 原生查询 + 自定义按 userId/conversationId 条件 |
 | 实体层 | entity | User / Conversation / Message | 严格对应 MySQL 表字段 |
-| 传输层 | dto | 7 个 DTO | 前后端请求 / 响应数据隔离 |
-| 配置层 | config | 6 个配置类 | Security / JWT / CORS / Redis / ChatClient / VectorStore |
-| 工具层 | util | JwtUtil | Token 生成与解析 |
+| 传输层 | dto | 8 个 DTO | 前后端请求 / 响应数据隔离（LoginResponse 含双 Token + expiresIn） |
+| 配置层 | config | 6 个配置类 | Security / JWT(type+黑名单) / CORS / Redis / ChatClient / VectorStore |
+| 工具层 | util | JwtUtil | access/refresh Token 生成 / 解析 / type 校验 / jti 提取 |
 | 异常层 | exception | GlobalExceptionHandler | 兜底统一错误响应 |
 
 ### 3.3 application.properties 关键配置（注意：项目为 properties 非 yml）
@@ -160,7 +163,11 @@ frontend/src/
 | spring.data.redis.host=localhost port=6379 | Redis 缓存 + 向量库共用 |
 | spring.ai.openai.* | 阿里云百炼兼容 OpenAI：qwen-turbo 聊天，text-embedding-v2 嵌入 |
 | spring.ai.vectorstore.redis.* | index=chat_knowledge_index prefix=rag:vector: initialize-schema=true |
-| jwt.secret=${JWT_SECRET:…至少32字符} jwt.expiration=86400000 | JWT 密钥 / 24h 过期 |
+| jwt.secret=${JWT_SECRET:…至少32字符} | JWT 签名密钥 |
+| jwt.access-expiration=1800000 | access Token 30 分钟过期 |
+| jwt.refresh-expiration=604800000 | refresh Token 7 天过期 |
+| jwt.redis.refresh-prefix=jwt:refresh: | Redis key：按 username 绑定的 refresh Token |
+| jwt.redis.blacklist-prefix=jwt:blacklist: | Redis key：登出的 access jti 黑名单（TTL=剩余有效期） |
 | chat.max-history-size=20 / max-message-length=4000 / max-tokens=4096 / cache-expire-hours=24 | 聊天上下文双重限制 + 缓存 TTL |
 | rag.enabled=true / retrieval.top-k=3 / retrieval.similarity-threshold=0.1 | RAG 检索参数 |
 | rag.chunk.max-size=800 / overlap-size=200 | Token 分块参数 |
@@ -170,24 +177,54 @@ frontend/src/
 
 ## 4. 核心业务流程
 
-### 4.1 用户认证流程
+### 4.1 用户认证流程（JWT 双 Token 方案）
 
 ```
-POST /api/auth/login
+[ 登录 ] POST /api/auth/login
   → AuthController.login(LoginRequest)
      → AuthService.login()
         1. UserRepository.findByUsername(username)
         2. PasswordEncoder.matches(raw, BCrypt encoded)
-        3. JwtUtil.generateToken(userId, username, expiration=24h)
-        4. LoginResponse: token + user { id, username }
+        3. JwtUtil.generateAccessToken(username)  → type=access, jti=UUID, TTL 30min
+           JwtUtil.generateRefreshToken(username) → type=refresh, jti=UUID, TTL 7d
+        4. TokenStoreService.saveRefreshToken(username, refreshToken)
+           → Redis SET jwt:refresh:{username} refreshToken EX=7d
+        5. 返回 { token(=access) + accessToken + refreshToken + expiresIn(=1800) + userId + username }
 
-前端：localStorage 存 token → 后续请求 Authorization: Bearer xxx
-      axios 拦截器统一注入 (utils/axios.js)
+[ 业务请求 ] 前端 Authorization: Bearer <accessToken>
+  → JwtAuthenticationFilter：
+     1. 解析签名、过期、subject；并断言 type == "access"（refresh Token 禁止进入）
+     2. TokenStoreService.isAccessTokenBlacklisted(jti)（命中则拒绝）
+     3. 通过 → SecurityContext 写入 User 主体
+
+[ 刷新 ] POST /api/auth/refresh  body: { refreshToken }  (需 permitAll，因为 access 已过期)
+  → AuthService.refresh(refreshToken)
+     1. JwtUtil.isValidWithoutUsername(refreshToken, "refresh")
+     2. JwtUtil.extractUsername → username
+     3. TokenStoreService.isValidRefreshToken(username, refreshToken)
+        → Redis GET jwt:refresh:{username} 必须等于传入值，否则视为被 rotation 踢掉
+     4. 通过则：新 access + 新 refresh → Redis SET 覆盖旧值（Token Rotation：旧 refresh 立刻失效）
+     5. 返回 { accessToken + refreshToken + expiresIn + ... }
+
+[ 登出 ] POST /api/auth/logout  (必须 authenticated)
+  → AuthService.logout(username, accessTokenFromHeader)
+     1. TokenStoreService.deleteRefreshToken(username)   → Redis DEL jwt:refresh:{username}
+     2. TokenStoreService.blacklistAccessToken(accessToken)
+        → 计算 accessToken 剩余有效期 = exp - now，写 Redis SET jwt:blacklist:{jti} 1 EX=剩余
 ```
+
+前端协同：
+- 登录：`saveAuthTokens(response)` 写入 localStorage `accessToken/token/refreshToken/userId/username`
+- axios 拦截器：响应 401 → 取 refreshToken → 临时 axios（绕开自身拦截防止死循环）POST /auth/refresh → 成功则更新 localStorage + 重放原请求 + 并发队列的其他请求；失败清本地 + 跳 `/login`；`isRefreshing` 锁保证同一时刻只有一次 refresh 请求
+- 路由守卫：优先读 accessToken，兼容老 token 字段
+- SSE fetch 401：Chat.vue 内独立走 inline refresh 流程（成功提示"请重新发送"，失败跳登录）
+- 登出：先 POST `/api/auth/logout`（通知后端拉黑），再 `clearAllAuth()` 清本地
 
 接口：
 - `POST /api/auth/register` - 注册（密码 BCrypt.encode）
-- `POST /api/auth/login` - 登录
+- `POST /api/auth/login` - 登录（返回 access + refresh 双 Token）
+- `POST /api/auth/refresh` - 刷新（无需 access Header，body 传 refreshToken，返回新的双 Token — Token Rotation）
+- `POST /api/auth/logout` - 登出（需要 access Header；拉黑 access + 删除绑定 refresh）
 
 ### 4.2 会话管理流程
 
