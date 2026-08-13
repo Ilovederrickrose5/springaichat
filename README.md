@@ -134,10 +134,11 @@ enterprise-rag/
 │   │   ├── OpenAiChatConfig            # ChatClient Bean（@Primary，qwen-turbo）
 │   │   └── RagConfig                   # VectorStore + QuestionAnswerAdvisor（RAG 开关）
 │   ├── controller/
-│   │   ├── AuthController              # 注册、登录
+│   │   ├── AuthController              # 注册、登录、刷新双 Token、登出拉黑
 │   │   └── ChatController              # 会话 CRUD、消息 CRUD、SSE、NDJSON
 │   ├── service/
-│   │   ├── AuthService                 # 认证业务、BCrypt 密码校验
+│   │   ├── AuthService                 # 认证业务：双 Token 签发 + refresh rotation + 登出
+│   │   ├── TokenStoreService           # Redis：refresh 绑定 + access 黑名单（TTL 剩余有效期）
 │   │   ├── ChatService                 # 核心聊天逻辑 + 缓存 + RAG 检索 + 异步落库 + 流式重试
 │   │   └── KnowledgeBaseService        # 知识库启动加载 + 分块 + 向量化 + Hash 去重
 │   ├── repository/
