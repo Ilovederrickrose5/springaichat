@@ -5,29 +5,31 @@
 ## 功能特性
 
 - ✅ 用户注册与登录（JWT 认证）
-- ✅ 用户个人信息管理（昵称、邮箱、手机、头像、性别、简介）
-- ✅ 智能对话交互（支持阿里云百炼模型）
-- ✅ 多轮对话历史管理（会话隔离）
-- ✅ 对话上下文保持（Redis 缓存优化）
+- ✅ 智能对话交互（支持阿里云百炼 qwen-turbo 模型）
+- ✅ 多轮对话历史管理（按用户会话隔离）
+- ✅ 对话上下文保持（Redis 缓存 + 双重限制）
 - ✅ SSE 流式输出（打字机效果，支持暂停/继续）
 - ✅ 消息管理（单条删除、批量删除、右键菜单）
 - ✅ 侧边栏折叠/展开（响应式布局）
-- ✅ 缓存预热与一致性保障
-- ✅ 双重上下文限制（消息数量 + Token 数量）
-- ✅ 网络重试机制（Connection reset 等自动重试）
-- ✅ RAG 检索增强（Redis Vector Store 向量检索）
-- ✅ 知识库文档加载（Markdown 文档自动向量化存储）
-- ✅ 语义文档分块（TokenTextSplitter 智能切分）
+- ✅ 缓存预热与一致性保障（Cache-Aside + 重试 + 过期回源）
+- ✅ 双重上下文限制（消息数量 20 条 + Token 数量 4096）
+- ✅ 网络重试机制（Connection reset 等场景自动重试最多 2 次）
+- ✅ 首字响应延迟优化（用户消息与会话标题更新异步写库）
+- ✅ RAG 检索增强（Redis Vector Store 余弦相似度检索）
+- ✅ 知识库文档加载（启动时自动扫描 classpath:knowledge/ Markdown 文档，Hash 去重）
+- ✅ 语义文档分块（TokenTextSplitter：800 Token/块，200 Token 重叠）
+- ✅ 租户级检索过滤（元数据 tenant=asset）
+- ✅ 业务层数据隔离（userId 从 Token 解析，防止越权访问）
 
 ## 技术栈
 
-- **后端框架**: Spring Boot 3.2.x
+- **后端框架**: Spring Boot 3.2.10
 - **AI 框架**: Spring AI 1.0.0-M4
-- **向量存储**: Redis Vector Store (RediSearch)
-- **数据库**: MySQL 8.0+ + Redis 8.0+
+- **向量存储**: Redis Vector Store (RediSearch 模块)
+- **数据库**: MySQL 8.0+（持久化） + Redis 8.0+（缓存 + 向量）
 - **安全框架**: Spring Security + JWT
 - **前端**: Vue 3 + Vite + Element Plus
-- **构建工具**: Maven
+- **构建工具**: Maven 3.8+
 
 ## 快速开始
 
@@ -36,7 +38,7 @@
 - JDK 17+
 - Maven 3.8+
 - MySQL 8.0+
-- Redis 8.0+（推荐使用 Redis Stack，需包含 RediSearch 模块）
+- Redis 8.0+（需要 RediSearch 模块支持向量检索，Redis Stack 或自定义加载）
 - Node.js 18+（前端）
 
 ### 数据库配置
@@ -46,32 +48,29 @@
 CREATE DATABASE ai_chat_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ```
 
-2. 确保 Redis Stack 服务运行在默认端口 6379（需要 RediSearch 模块支持向量检索）
+2. 确保 Redis 服务运行在 `localhost:6379`，并已加载 RediSearch 模块（向量索引初始化依赖 `FT.*` 命令）
 
 ### 环境变量配置
 
-在启动前，需要配置以下环境变量：
-
 | 环境变量 | 说明 | 默认值 |
 |---------|------|--------|
-| `DB_URL` | 数据库连接地址 | jdbc:mysql://localhost:3306/ai_chat_db |
+| `DB_URL` | 数据库连接地址 | jdbc:mysql://localhost:3306/ai_chat_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true&characterEncoding=UTF-8 |
 | `DB_USERNAME` | 数据库用户名 | root |
 | `MYSQL_PASSWORD` | 数据库密码 | （空） |
-| `ALIYUN_API_KEY` | 阿里云百炼 API Key | （必填） |
-| `JWT_SECRET` | JWT 密钥（至少32字符） | （必填） |
+| `ALIYUN_API_KEY` | 阿里云百炼兼容模式 API Key | （必填，生产环境必须配置） |
+| `JWT_SECRET` | JWT 签名密钥（至少 32 字符） | （必填，生产环境必须配置） |
 
 ### RAG 配置说明
 
-系统支持基于 Redis Vector Store 的 RAG（检索增强生成）功能，相关配置项：
-
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
-| `rag.enabled` | 是否启用 RAG 功能 | true |
-| `rag.retrieval.top-k` | 向量检索返回的文档数 | 3 |
-| `rag.retrieval.similarity-threshold` | 相似度阈值（0-1） | 0.1 |
+| `rag.enabled` | 是否启用 RAG 检索增强功能 | true |
+| `rag.retrieval.top-k` | 向量检索返回文档数 | 3 |
+| `rag.retrieval.similarity-threshold` | 余弦相似度阈值（0-1，中文建议偏低） | 0.1 |
 | `rag.chunk.max-size` | 文档分块大小（Token） | 800 |
 | `rag.chunk.overlap-size` | 分块重叠大小（Token） | 200 |
-| `rag.knowledge.directory` | 知识库文档目录 | knowledge/ |
+| `rag.knowledge.directory` | 知识库 Markdown 文档目录（classpath） | knowledge/ |
+| `rag.knowledge.default-tenant` | 知识库元数据默认租户，用于检索过滤 | asset |
 
 ### 启动方式
 
@@ -97,10 +96,9 @@ mvn clean package
 java -jar target/enterprise-rag-1.0.0.jar
 ```
 
-#### 方式三：使用启动脚本
+#### 方式三：使用启动脚本（Windows）
 
-```bash
-# Windows
+```bat
 start-all.bat
 ```
 
@@ -109,47 +107,73 @@ start-all.bat
 | 接口 | 方法 | 说明 |
 |------|------|------|
 | `/api/auth/register` | POST | 用户注册 |
-| `/api/auth/login` | POST | 用户登录 |
-| `/api/chat/conversations` | GET | 获取会话列表 |
-| `/api/chat/conversations` | POST | 创建会话 |
-| `/api/chat/conversations/{id}` | GET | 获取会话详情 |
-| `/api/chat/conversations/{id}` | DELETE | 删除会话 |
-| `/api/chat/conversations/{id}/messages` | GET | 获取会话消息 |
-| `/api/chat/messages` | POST | 同步发送消息 |
-| `/api/chat/messages/stream` | POST | 流式发送消息（SSE） |
-| `/api/chat/messages/{id}` | DELETE | 删除单条消息 |
-| `/api/chat/messages/batch-delete` | POST | 批量删除消息 |
+| `/api/auth/login` | POST | 用户登录，返回 JWT |
+| `/api/chat/conversations` | GET | 获取当前用户的会话列表（按更新时间倒序） |
+| `/api/chat/conversations` | POST | 创建会话（title 可选，默认「新对话」） |
+| `/api/chat/conversations/{id}` | GET | 获取单个会话详情（验证归属） |
+| `/api/chat/conversations/{id}` | DELETE | 删除会话及所有消息，并删除 Redis 缓存 |
+| `/api/chat/conversations/{id}/messages` | GET | 获取会话的消息列表（验证归属） |
+| `/api/chat/messages` | POST | 同步发送消息并等待完整回复 |
+| `/api/chat/messages/stream` | POST | 流式发送消息（SSE，`Content-Type: text/event-stream`） |
+| `/api/chat/messages/stream/json` | POST | 流式发送消息（NDJSON 格式，`Content-Type: application/x-ndjson`） |
+| `/api/chat/messages/{id}` | DELETE | 删除单条消息（验证归属 + 删除 Redis 缓存） |
+| `/api/chat/messages/batch-delete` | POST | 批量删除消息（消息归属校验 + 批量缓存清理重试） |
 
 ### 项目结构
 
 ```
 enterprise-rag/
 ├── src/main/java/com/example/springaichat/
-│   ├── config/         # 配置类（安全、跨域、JWT、Redis、AI、RAG）
-│   ├── controller/     # REST API 控制层
-│   ├── service/        # 业务逻辑层（含 RAG 知识库服务）
-│   ├── repository/     # 数据访问层
-│   ├── entity/         # 数据库实体
-│   ├── dto/            # 数据传输对象
-│   ├── exception/      # 全局异常处理
-│   ├── util/           # 工具类
+│   ├── config/
+│   │   ├── SecurityConfig              # Spring Security + CORS + 放行 OPTIONS
+│   │   ├── JwtAuthenticationFilter     # JWT 校验过滤器，解析 userId 写入 SecurityContext
+│   │   ├── CorsConfig                  # 允许 5173 跨域、允许 Authorization 头
+│   │   ├── RedisConfig                 # RedisTemplate 序列化配置
+│   │   ├── OpenAiChatConfig            # ChatClient Bean（@Primary，qwen-turbo）
+│   │   └── RagConfig                   # VectorStore + QuestionAnswerAdvisor（RAG 开关）
+│   ├── controller/
+│   │   ├── AuthController              # 注册、登录
+│   │   └── ChatController              # 会话 CRUD、消息 CRUD、SSE、NDJSON
+│   ├── service/
+│   │   ├── AuthService                 # 认证业务、BCrypt 密码校验
+│   │   ├── ChatService                 # 核心聊天逻辑 + 缓存 + RAG 检索 + 异步落库 + 流式重试
+│   │   └── KnowledgeBaseService        # 知识库启动加载 + 分块 + 向量化 + Hash 去重
+│   ├── repository/
+│   │   ├── UserRepository
+│   │   ├── ConversationRepository
+│   │   └── MessageRepository
+│   ├── entity/
+│   │   ├── User                        # id / username / password / createTime
+│   │   ├── Conversation                # id / userId / title / createTime / updateTime
+│   │   └── Message                     # id / conversationId / role / content / createTime
+│   ├── dto/
+│   │   ├── LoginRequest / LoginResponse
+│   │   ├── RegisterRequest
+│   │   ├── MessageRequest / MessageResponse
+│   │   ├── ConversationResponse
+│   │   └── BatchDeleteRequest
+│   ├── exception/  GlobalExceptionHandler
+│   ├── util/       JwtUtil
 │   └── SpringAiChatApplication.java
 ├── src/main/resources/
-│   ├── application.properties # 应用配置
-│   └── knowledge/              # RAG 知识库文档目录（Markdown 格式）
-├── frontend/           # 前端代码
+│   ├── application.properties          # 应用主配置
+│   └── knowledge/                      # RAG 知识库目录（*.md，启动自动加载）
+├── frontend/
 │   ├── src/
-│   │   ├── api/        # API配置（config.js）
-│   │   ├── router/     # 路由配置
-│   │   ├── utils/      # 工具类（axios配置）
-│   │   ├── views/      # 页面（Chat、Login）
-│   │   ├── App.vue     # 根组件
-│   │   ├── main.js     # 入口文件
-│   │   └── style.css   # 全局样式
+│   │   ├── api/config.js
+│   │   ├── router/index.js             # /  → Login.vue ; /chat → Chat.vue
+│   │   ├── utils/axios.js              # 拦截器自动注入 Authorization 头
+│   │   ├── views/
+│   │   │   ├── Chat.vue                # 主聊天页面（SSE 流、打字机、右键菜单、批量删除）
+│   │   │   └── Login.vue               # 登录 / 注册
+│   │   ├── App.vue
+│   │   ├── main.js
+│   │   └── style.css
 │   └── package.json
-├── pom.xml             # Maven 配置
-├── start-all.bat       # 启动脚本（Windows）
-└── README.md           # 项目说明
+├── pom.xml                             # Maven 配置（artifactId: enterprise-rag）
+├── start-all.bat                       # Windows 一键启动脚本（Redis → 后端 → 前端）
+├── AGENTS.md                           # 开发者/Agent 工作指引
+└── README.md                           # 项目说明
 ```
 
 ## 配置说明
@@ -157,97 +181,129 @@ enterprise-rag/
 ### application.properties 主要配置项
 
 ```properties
-# 服务器配置
+# 服务器
 server.port=8080
+spring.profiles.active=${SPRING_PROFILES_ACTIVE:dev}
 spring.application.name=enterprise-rag
 
-# Spring AI 配置（阿里云百炼）
-spring.ai.openai.api-key=${ALIYUN_API_KEY}
+# MySQL（Hikari 连接池）
+spring.datasource.url=${DB_URL:jdbc:mysql://localhost:3306/ai_chat_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true&characterEncoding=UTF-8}
+spring.datasource.username=${DB_USERNAME:root}
+spring.datasource.password=${MYSQL_PASSWORD:}
+spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.MySQL8Dialect
+
+# Redis（缓存 + 向量库共用）
+spring.data.redis.host=localhost
+spring.data.redis.port=6379
+spring.data.redis.database=0
+
+# Spring AI - 阿里云百炼（兼容 OpenAI 接口）
+spring.ai.openai.api-key=${ALIYUN_API_KEY:sk-your-api-key-here}
 spring.ai.openai.base-url=https://dashscope.aliyuncs.com/compatible-mode
 spring.ai.openai.chat.options.model=qwen-turbo
 spring.ai.openai.chat.options.temperature=0.7
 spring.ai.openai.chat.options.max-tokens=2048
 spring.ai.openai.embedding.options.model=text-embedding-v2
 
-# Redis Vector Store 配置（RAG）
+# Redis Vector Store
 spring.ai.vectorstore.redis.uri=redis://localhost:6379
 spring.ai.vectorstore.redis.index=chat_knowledge_index
 spring.ai.vectorstore.redis.initialize-schema=true
 spring.ai.vectorstore.redis.prefix=rag:vector:
 
-# 聊天配置
+# JWT
+jwt.secret=${JWT_SECRET:your-production-secret-key-must-be-at-least-32-characters-long}
+jwt.expiration=86400000   # 24h
+
+# 聊天上下文
 chat.max-history-size=20
 chat.max-message-length=4000
 chat.max-tokens=4096
 chat.cache-expire-hours=24
 
-# RAG 配置
+# RAG
 rag.enabled=true
 rag.retrieval.top-k=3
 rag.retrieval.similarity-threshold=0.1
 rag.chunk.max-size=800
 rag.chunk.overlap-size=200
 rag.knowledge.directory=knowledge/
+rag.knowledge.default-tenant=asset
 ```
 
 ## 核心功能说明
 
-### SSE 流式输出
+### SSE 流式输出与首字延迟优化
 
-- 后端使用 `Flux<String>` 返回流式数据
-- 前端使用 `fetch` + `ReadableStream` 逐字接收
-- 支持暂停/继续功能（点击 AI 消息右下角按钮）
-- 打字机效果（默认 30ms/字符，可配置）
+- 后端：ChatService 以 `Flux<String>` 返回流式数据，对 `Connection reset` 等网络抖动实现最多 2 次自动重试
+- 前端：`fetch` + `ReadableStream.getReader()` 逐段接收，按字符追加实现打字机效果（默认 10ms/字符，`typingSpeed` 可调）
+- UI：AI 消息气泡右下角提供「暂停 / 继续」控制按钮，流式状态同步显示
+- **首字优化**：用户消息 `saveUserMessageAsync` 和会话标题 `updateConversationTitleAsync` 均通过 `CompletableFuture.runAsync` 异步写入 MySQL，主流程直接开始调用 AI 模型流式接口，用户不用等数据库
+- 断连处理：try-catch 包住读取循环，捕获异常弹提示 + 清理占位消息，finally 重置 `isStreaming` 标志
 
-### 上下文缓存机制
+### 上下文缓存机制（Cache-Aside）
 
-- **缓存策略**: Cache-Aside 模式，MySQL 为唯一数据源
-- **缓存分层**: Redis 存储活跃上下文，MySQL 存储完整历史
-- **双重限制**: 最多 20 条消息 + 最多 4096 Token
-- **缓存预热**: 首次打开旧会话时自动从数据库加载
-- **一致性保障**: 重试机制 + 24h 过期 + 读时回源 + 写时覆盖
+- 读取：先查 Redis `chat:history:{conversationId}`，miss 则查 MySQL → 回写 Redis（TTL 24h）
+- 写入：先写 MySQL → 删除 Redis 缓存（删除失败最多重试 2 次，间隔递增）
+- 双重限制：trimChatHistory 按「最多 20 条」+「累计最多 4096 Token」双重裁剪，从索引 1 开始删除最早消息（索引 0 是 SystemMessage 保留）
+- Token 估算：中文 ≈ 2 字符/Token，英文 ≈ 4 字符/Token，消息角色元数据加 4 Token
+- 一致性兜底：缓存 24h 自动过期；Redis 读异常则降级走 MySQL
 
 ### 消息删除
 
-- 右键点击消息弹出菜单
-- 支持单条删除和批量删除
-- 删除时同步清理 Redis 缓存（带重试机制）
+- 右键菜单触发单条删除；多选触发批量删除
+- 删除前先通过 `消息 → 会话 → user_id` 链路校验归属，不匹配直接拒绝，防止越权
+- 删除成功后同步清理 Redis 聊天历史缓存（带重试）
 
 ### RAG 检索增强
 
-- **知识库加载**: 启动时自动从 `classpath:knowledge/` 目录加载 Markdown 文档
-- **语义分块**: 使用 `TokenTextSplitter` 按 Token 智能切分文档（默认 800 Token/块，200 Token 重叠）
-- **向量存储**: 使用 Redis Vector Store 存储文档向量，自动创建 RediSearch 索引
-- **检索增强**: 提问时自动从向量库检索相关知识，增强 AI 回答的准确性和可信度
-- **配置开关**: 通过 `rag.enabled` 配置项控制 RAG 功能启用/禁用
+1. **加载**：应用启动时 `KnowledgeBaseService` 扫描 `classpath:knowledge/` 下所有 Markdown 文件，用文档内容 Hash 去重，避免重复向量化
+2. **分块**：`TokenTextSplitter(chunkMaxSize=800, overlapSize=200)` 按 Token 级切分，相邻块 200 Token 接力覆盖语义边界
+3. **打标**：每个 Document 附带 metadata：`tenant=asset`、`source=文件名`、`chunk_index`
+4. **向量化**：`EmbeddingModel` 调用阿里云 `text-embedding-v2` 生成向量
+5. **存储**：写入 Redis Vector Store，RediSearch 索引名 `chat_knowledge_index`，Key 前缀 `rag:vector:`
+6. **检索**：用户提问时 `RedisVectorStore.similaritySearch` 检索，topK=3，相似度阈值=0.1，并按 `tenant == 'asset'` 过滤
+7. **生成**：检索到的文档片段拼进 SystemMessage，要求模型回答必须基于参考资料，不能编造；无检索结果时退回纯模型回答
+
+### 业务层数据隔离
+
+- JWT 过滤器解析出 userId → 存入 SecurityContext
+- Controller 层 `@AuthenticationPrincipal User user` 取用户，所有查询条件 `WHERE user_id = ?`
+- 敏感操作（删会话、删消息）先查归属再执行，userId 来自 Token 不是请求体，前端无法伪造
 
 ## 开发指南
 
 ### 添加新功能
 
-1. 创建实体类（entity）
-2. 创建 Repository 接口
-3. 创建 Service 层
-4. 创建 Controller 层
-5. 添加 DTO（请求/响应对象）
-6. 更新前端页面
+1. 在 `entity` 创建/调整 JPA 实体（注意字段非空与长度约束）
+2. 在 `repository` 继承 `JpaRepository`
+3. 在 `service` 写业务逻辑，注意数据隔离
+4. 在 `controller` 对外暴露 REST API，统一返回结构 `{ success, message, data }`
+5. 在 `dto` 增加对应请求/响应对象
+6. 同步修改前端页面与路由
 
 ### 代码规范
 
-- 遵循 Spring Boot 最佳实践
-- 使用 DTO 隔离数据库实体
-- 统一异常处理
-- 禁止硬编码敏感信息
+- 分层清晰：Controller → Service → Repository → Entity；不跨层调用
+- 数据传输一律通过 DTO，不直接把 Entity 返回前端
+- `GlobalExceptionHandler` 统一异常处理，避免堆栈泄漏
+- 敏感配置走环境变量，禁止硬编码
 
 ## 部署说明
 
 ### 生产环境部署
 
-1. 配置环境变量
-2. 使用 `mvn clean package` 打包
-3. 使用以下命令启动：
 ```bash
-java -jar enterprise-rag-1.0.0.jar --spring.profiles.active=prod
+# 打包
+mvn clean package -DskipTests
+
+# 启动（必填环境变量）
+export ALIYUN_API_KEY="sk-xxxx"
+export JWT_SECRET="至少32字符强随机密钥"
+export MYSQL_PASSWORD="your-db-password"
+java -jar target/enterprise-rag-1.0.0.jar --spring.profiles.active=prod
 ```
 
 ### Docker 部署（可选）
