@@ -66,7 +66,7 @@ CREATE DATABASE ai_chat_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 |--------|------|--------|
 | `rag.enabled` | 是否启用 RAG 检索增强功能 | true |
 | `rag.retrieval.top-k` | 向量检索返回文档数 | 3 |
-| `rag.retrieval.similarity-threshold` | 余弦相似度阈值（0-1，中文建议偏低） | 0.1 |
+| `rag.retrieval.similarity-threshold` | 余弦相似度阈值（0-1，中文建议 0.4~0.5） | 0.45 |
 | `rag.chunk.max-size` | 文档分块大小（Token） | 800 |
 | `rag.chunk.overlap-size` | 分块重叠大小（Token） | 200 |
 | `rag.knowledge.directory` | 知识库 Markdown 文档目录（classpath） | knowledge/ |
@@ -132,7 +132,7 @@ enterprise-rag/
 │   │   ├── CorsConfig                  # 允许 5173 跨域、允许 Authorization 头
 │   │   ├── RedisConfig                 # RedisTemplate 序列化配置
 │   │   ├── OpenAiChatConfig            # ChatClient Bean（@Primary，qwen-turbo）
-│   │   └── RagConfig                   # VectorStore + QuestionAnswerAdvisor（RAG 开关）
+│   │   └── RagConfig                   # VectorStore（RAG 开关）；检索统一由 ChatService 手动执行并带 tenant 过滤
 │   ├── controller/
 │   │   ├── AuthController              # 注册、登录、刷新双 Token、登出拉黑
 │   │   └── ChatController              # 会话 CRUD、消息 CRUD、SSE、NDJSON
@@ -233,7 +233,7 @@ chat.cache-expire-hours=24
 # RAG
 rag.enabled=true
 rag.retrieval.top-k=3
-rag.retrieval.similarity-threshold=0.1
+rag.retrieval.similarity-threshold=0.45
 rag.chunk.max-size=800
 rag.chunk.overlap-size=200
 rag.knowledge.directory=knowledge/

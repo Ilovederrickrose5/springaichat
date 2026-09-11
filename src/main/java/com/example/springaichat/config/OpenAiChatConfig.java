@@ -3,7 +3,6 @@ package com.example.springaichat.config;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.QuestionAnswerAdvisor;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.openai.OpenAiChatModel;
@@ -14,9 +13,6 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
-import org.springframework.beans.factory.annotation.Autowired;
-
-import java.util.List;
 
 @Configuration
 public class OpenAiChatConfig {
@@ -61,20 +57,13 @@ public class OpenAiChatConfig {
 
   @Bean
   @Primary
-  public ChatClient.Builder chatClientBuilder(OpenAiChatModel chatModel,
-          @Autowired(required = false) QuestionAnswerAdvisor questionAnswerAdvisor) {
-    ChatClient.Builder builder = ChatClient.builder(chatModel)
-        .defaultOptions(chatOptions());
-
-    if (questionAnswerAdvisor != null) {
-      builder.defaultAdvisors(List.of(new SimpleLoggerAdvisor(), questionAnswerAdvisor));
-      logger.info("RAG enabled, using QuestionAnswerAdvisor with SimpleLoggerAdvisor");
-    } else {
-      builder.defaultAdvisors(new SimpleLoggerAdvisor());
-      logger.info("RAG disabled, using only SimpleLoggerAdvisor");
-    }
-
-    return builder;
+  public ChatClient.Builder chatClientBuilder(OpenAiChatModel chatModel) {
+    // RAG 检索统一由 ChatService.retrieveRagContext 手动执行（带 tenant metadata 过滤），
+    // 此处不再挂载 QuestionAnswerAdvisor，避免无租户过滤的自动检索造成数据越界与重复 Embedding 调用
+    logger.info("ChatClient initialized with SimpleLoggerAdvisor only; RAG retrieval delegated to ChatService");
+    return ChatClient.builder(chatModel)
+        .defaultOptions(chatOptions())
+        .defaultAdvisors(new SimpleLoggerAdvisor());
   }
 
   @Bean

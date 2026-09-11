@@ -105,8 +105,8 @@ src/main/java/com/example/springaichat/
 │   ├── JwtAuthenticationFilter     # 额外：type 必须是 access + jti 黑名单校验
 │   ├── CorsConfig
 │   ├── RedisConfig
-│   ├── OpenAiChatConfig   # ChatClient @Primary Bean (qwen-turbo)
-│   └── RagConfig          # VectorStore + QuestionAnswerAdvisor (@ConditionalOnProperty rag.enabled)
+│   ├── OpenAiChatConfig   # ChatClient @Primary Bean (qwen-turbo)，仅挂 SimpleLoggerAdvisor；RAG 检索由 ChatService 手动执行
+│   └── RagConfig          # VectorStore Bean (@ConditionalOnProperty rag.enabled)；不再注册 QuestionAnswerAdvisor（避免无租户过滤的自动检索）
 ├── controller/       # AuthController（register/login/refresh/logout）、ChatController（含 SSE + NDJSON）
 ├── dto/              # 8 个 DTO
 │   ├── LoginRequest / LoginResponse  # LoginResponse: token/accessToken/refreshToken/expiresIn 兼容
@@ -169,7 +169,7 @@ frontend/src/
 | jwt.redis.refresh-prefix=jwt:refresh: | Redis key：按 username 绑定的 refresh Token |
 | jwt.redis.blacklist-prefix=jwt:blacklist: | Redis key：登出的 access jti 黑名单（TTL=剩余有效期） |
 | chat.max-history-size=20 / max-message-length=4000 / max-tokens=4096 / cache-expire-hours=24 | 聊天上下文双重限制 + 缓存 TTL |
-| rag.enabled=true / retrieval.top-k=3 / retrieval.similarity-threshold=0.1 | RAG 检索参数 |
+| rag.enabled=true / retrieval.top-k=3 / retrieval.similarity-threshold=0.45 | RAG 检索参数 |
 | rag.chunk.max-size=800 / overlap-size=200 | Token 分块参数 |
 | rag.knowledge.directory=knowledge/ default-tenant=asset | 知识库目录 + 租户元数据 |
 

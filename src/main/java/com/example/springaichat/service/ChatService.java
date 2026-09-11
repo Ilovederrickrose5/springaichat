@@ -63,7 +63,7 @@ public class ChatService {
     @Value("${rag.retrieval.top-k:3}")
     private int ragTopK;
 
-    @Value("${rag.retrieval.similarity-threshold:0.7}")
+    @Value("${rag.retrieval.similarity-threshold:0.45}")
     private double ragSimilarityThreshold;
 
     @Autowired(required = false)
