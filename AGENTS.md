@@ -29,7 +29,7 @@
 4. 打字机效果 + AI 气泡内「暂停/继续」控制
 5. 消息管理（单条删除、批量删除、归属校验、Redis 缓存清理重试）
 6. 聊天上下文记忆：Redis Cache-Aside 缓存 + MySQL 持久化 + 双重限制（消息条数 20 / Token 4096）
-7. RAG 检索增强：启动自动扫描 knowledge/ Markdown → Token 分块(800/200) → text-embedding-v2 向量化 → Redis Vector Store → 检索(topK=3, sim=0.1, tenant=asset过滤) → 拼进 SystemMessage
+7. RAG 检索增强：启动自动扫描 knowledge/ Markdown → Token 分块(800/200) → text-embedding-v2 向量化 → Redis Vector Store → 检索(topK=3, sim=0.45, tenant=asset过滤) → 拼进 SystemMessage
 8. 首字响应优化：用户消息 / 会话标题更新异步落库（CompletableFuture.runAsync）
 9. 流式自动重试：Connection reset 等错误最多重试 2 次
 
@@ -310,7 +310,7 @@ DELETE /api/chat/messages/{id} 或  POST batch-delete
 ```
 SearchRequest.query(question)
   .withTopK(3)
-  .withSimilarityThreshold(0.1)
+  .withSimilarityThreshold(0.45)
   .withFilterExpression("tenant == 'asset'")
   → VectorStore.similaritySearch 返回 List<Document>
 

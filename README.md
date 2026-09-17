@@ -131,7 +131,7 @@ enterprise-rag/
 │   │   ├── JwtAuthenticationFilter     # JWT 校验过滤器，解析 userId 写入 SecurityContext
 │   │   ├── CorsConfig                  # 允许 5173 跨域、允许 Authorization 头
 │   │   ├── RedisConfig                 # RedisTemplate 序列化配置
-│   │   ├── OpenAiChatConfig            # ChatClient Bean（@Primary，qwen-turbo）
+│   │   ├── OpenAiChatConfig            # ChatClient Bean（@Primary，qwen-turbo），仅挂 SimpleLoggerAdvisor；RAG 检索由 ChatService 手动执行
 │   │   └── RagConfig                   # VectorStore（RAG 开关）；检索统一由 ChatService 手动执行并带 tenant 过滤
 │   ├── controller/
 │   │   ├── AuthController              # 注册、登录、刷新双 Token、登出拉黑
@@ -266,12 +266,12 @@ rag.knowledge.default-tenant=asset
 
 ### RAG 检索增强
 
-1. **加载**：应用启动时 `KnowledgeBaseService` 扫描 `classpath:knowledge/` 下所有 Markdown 文件，用文档内容 Hash 去重，避免重复向量化
+1. **加载**：应用启动时 `KnowledgeBaseService` 扫描 `classpath:knowledge/` 下所有 Markdown 文件，用文件路径 Hash 去重，避免重复向量化
 2. **分块**：`TokenTextSplitter(chunkMaxSize=800, overlapSize=200)` 按 Token 级切分，相邻块 200 Token 接力覆盖语义边界
 3. **打标**：每个 Document 附带 metadata：`tenant=asset`、`source=文件名`、`chunk_index`
 4. **向量化**：`EmbeddingModel` 调用阿里云 `text-embedding-v2` 生成向量
 5. **存储**：写入 Redis Vector Store，RediSearch 索引名 `chat_knowledge_index`，Key 前缀 `rag:vector:`
-6. **检索**：用户提问时 `RedisVectorStore.similaritySearch` 检索，topK=3，相似度阈值=0.1，并按 `tenant == 'asset'` 过滤
+6. **检索**：用户提问时 `ChatService.retrieveRagContext` 手动调用 `RedisVectorStore.similaritySearch`，topK=3，相似度阈值=0.45，并按 `tenant == 'asset'` 过滤（唯一检索入口，不依赖框架 Advisor 自动检索）
 7. **生成**：检索到的文档片段拼进 SystemMessage，要求模型回答必须基于参考资料，不能编造；无检索结果时退回纯模型回答
 
 ### JWT 双 Token 认证方案
