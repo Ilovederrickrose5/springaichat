@@ -44,33 +44,34 @@
 ### 数据库配置
 
 1. 创建 MySQL 数据库：
+
 ```sql
 CREATE DATABASE ai_chat_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ```
 
-2. 确保 Redis 服务运行在 `localhost:6379`，并已加载 RediSearch 模块（向量索引初始化依赖 `FT.*` 命令）
+1. 确保 Redis 服务运行在 `localhost:6379`，并已加载 RediSearch 模块（向量索引初始化依赖 `FT.*` 命令）
 
 ### 环境变量配置
 
-| 环境变量 | 说明 | 默认值 |
-|---------|------|--------|
-| `DB_URL` | 数据库连接地址 | jdbc:mysql://localhost:3306/ai_chat_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true&characterEncoding=UTF-8 |
-| `DB_USERNAME` | 数据库用户名 | root |
-| `MYSQL_PASSWORD` | 数据库密码 | （空） |
-| `ALIYUN_API_KEY` | 阿里云百炼兼容模式 API Key | （必填，生产环境必须配置） |
-| `JWT_SECRET` | JWT 签名密钥（至少 32 字符） | （必填，生产环境必须配置） |
+| 环境变量             | 说明                 | 默认值                                                                                                                              |
+| ---------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `DB_URL`         | 数据库连接地址            | jdbc:mysql://localhost:3306/ai\_chat\_db?useSSL=false\&serverTimezone=UTC\&allowPublicKeyRetrieval=true\&characterEncoding=UTF-8 |
+| `DB_USERNAME`    | 数据库用户名             | root                                                                                                                             |
+| `MYSQL_PASSWORD` | 数据库密码              | （空）                                                                                                                              |
+| `ALIYUN_API_KEY` | 阿里云百炼兼容模式 API Key  | （必填，生产环境必须配置）                                                                                                                    |
+| `JWT_SECRET`     | JWT 签名密钥（至少 32 字符） | （必填，生产环境必须配置）                                                                                                                    |
 
 ### RAG 配置说明
 
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `rag.enabled` | 是否启用 RAG 检索增强功能 | true |
-| `rag.retrieval.top-k` | 向量检索返回文档数 | 3 |
-| `rag.retrieval.similarity-threshold` | 余弦相似度阈值（0-1，中文建议 0.4~0.5） | 0.45 |
-| `rag.chunk.max-size` | 文档分块大小（Token） | 800 |
-| `rag.chunk.overlap-size` | 分块重叠大小（Token） | 200 |
-| `rag.knowledge.directory` | 知识库 Markdown 文档目录（classpath） | knowledge/ |
-| `rag.knowledge.default-tenant` | 知识库元数据默认租户，用于检索过滤 | asset |
+| 配置项                                  | 说明                           | 默认值        |
+| ------------------------------------ | ---------------------------- | ---------- |
+| `rag.enabled`                        | 是否启用 RAG 检索增强功能              | true       |
+| `rag.retrieval.top-k`                | 向量检索返回文档数                    | 3          |
+| `rag.retrieval.similarity-threshold` | 余弦相似度阈值（0-1，中文建议 0.4\~0.5）   | 0.45       |
+| `rag.chunk.max-size`                 | 文档分块大小（Token）                | 800        |
+| `rag.chunk.overlap-size`             | 分块重叠大小（Token）                | 200        |
+| `rag.knowledge.directory`            | 知识库 Markdown 文档目录（classpath） | knowledge/ |
+| `rag.knowledge.default-tenant`       | 知识库元数据默认租户，用于检索过滤            | asset      |
 
 ### 启动方式
 
@@ -104,22 +105,22 @@ start-all.bat
 
 ### API 接口
 
-| 接口 | 方法 | 说明 |
-|------|------|------|
-| `/api/auth/register` | POST | 用户注册 |
-| `/api/auth/login` | POST | 用户登录，返回 `accessToken + refreshToken + expiresIn`（兼容旧字段 `token`） |
-| `/api/auth/refresh` | POST | 用 refresh 换取新的 access + 新 refresh（Token Rotation） |
-| `/api/auth/logout` | POST | 登出（需登录态）：access 拉黑 + 删除绑定的 refresh |
-| `/api/chat/conversations` | GET | 获取当前用户的会话列表（按更新时间倒序） |
-| `/api/chat/conversations` | POST | 创建会话（title 可选，默认「新对话」） |
-| `/api/chat/conversations/{id}` | GET | 获取单个会话详情（验证归属） |
-| `/api/chat/conversations/{id}` | DELETE | 删除会话及所有消息，并删除 Redis 缓存 |
-| `/api/chat/conversations/{id}/messages` | GET | 获取会话的消息列表（验证归属） |
-| `/api/chat/messages` | POST | 同步发送消息并等待完整回复 |
-| `/api/chat/messages/stream` | POST | 流式发送消息（SSE，`Content-Type: text/event-stream`） |
-| `/api/chat/messages/stream/json` | POST | 流式发送消息（NDJSON 格式，`Content-Type: application/x-ndjson`） |
-| `/api/chat/messages/{id}` | DELETE | 删除单条消息（验证归属 + 删除 Redis 缓存） |
-| `/api/chat/messages/batch-delete` | POST | 批量删除消息（消息归属校验 + 批量缓存清理重试） |
+| 接口                                      | 方法     | 说明                                                              |
+| --------------------------------------- | ------ | --------------------------------------------------------------- |
+| `/api/auth/register`                    | POST   | 用户注册                                                            |
+| `/api/auth/login`                       | POST   | 用户登录，返回 `accessToken + refreshToken + expiresIn`（兼容旧字段 `token`） |
+| `/api/auth/refresh`                     | POST   | 用 refresh 换取新的 access + 新 refresh（Token Rotation）               |
+| `/api/auth/logout`                      | POST   | 登出（需登录态）：access 拉黑 + 删除绑定的 refresh                              |
+| `/api/chat/conversations`               | GET    | 获取当前用户的会话列表（按更新时间倒序）                                            |
+| `/api/chat/conversations`               | POST   | 创建会话（title 可选，默认「新对话」）                                          |
+| `/api/chat/conversations/{id}`          | GET    | 获取单个会话详情（验证归属）                                                  |
+| `/api/chat/conversations/{id}`          | DELETE | 删除会话及所有消息，并删除 Redis 缓存                                          |
+| `/api/chat/conversations/{id}/messages` | GET    | 获取会话的消息列表（验证归属）                                                 |
+| `/api/chat/messages`                    | POST   | 同步发送消息并等待完整回复                                                   |
+| `/api/chat/messages/stream`             | POST   | 流式发送消息（SSE，`Content-Type: text/event-stream`）                   |
+| `/api/chat/messages/stream/json`        | POST   | 流式发送消息（NDJSON 格式，`Content-Type: application/x-ndjson`）          |
+| `/api/chat/messages/{id}`               | DELETE | 删除单条消息（验证归属 + 删除 Redis 缓存）                                      |
+| `/api/chat/messages/batch-delete`       | POST   | 批量删除消息（消息归属校验 + 批量缓存清理重试）                                       |
 
 ### 项目结构
 
@@ -278,12 +279,13 @@ rag.knowledge.default-tenant=asset
 
 原 24h 单 Token 已升级为「access + refresh」双 Token 机制：
 
-| Token | 有效期 | 作用 | 存储位置 |
-|---|---|---|---|
-| access | 30 分钟 | 调用业务接口的「短期凭证」 | 前端 localStorage `accessToken`，请求头 `Authorization: Bearer xxx` |
-| refresh | 7 天 | 只用来「换新 access」，绝不允许直接调业务接口 | 前端 localStorage `refreshToken` + 后端 Redis（`jwt:refresh:{username}`） |
+| Token   | 有效期   | 作用                         | 存储位置                                                                |
+| ------- | ----- | -------------------------- | ------------------------------------------------------------------- |
+| access  | 30 分钟 | 调用业务接口的「短期凭证」              | 前端 localStorage `accessToken`，请求头 `Authorization: Bearer xxx`       |
+| refresh | 7 天   | 只用来「换新 access」，绝不允许直接调业务接口 | 前端 localStorage `refreshToken` + 后端 Redis（`jwt:refresh:{username}`） |
 
 **安全机制**：
+
 1. **类型隔离**：Token 内部带 `type=access|refresh` 声明，JwtAuthenticationFilter 显式拒绝拿 refresh 调 `/api/chat/**`
 2. **Token Rotation**：每次 `/api/auth/refresh` 成功都会**生成新的 refresh Token** 覆盖 Redis 绑定，旧 refresh 立即失效（防窃取后反复使用）
 3. **并发登录踢旧**：同一用户重新登录，Redis `jwt:refresh:{username}` 覆盖旧值 → 旧端 refresh 必失败
@@ -293,6 +295,7 @@ rag.knowledge.default-tenant=asset
 5. **Redis 故障兜底**：黑名单查询失败时「保守放行」（比全站登不上更可接受）；refresh/删除失败返回明确错误码
 
 **前端无感刷新流程**：
+
 ```
 业务请求 → 后端返回 401
    │
@@ -303,6 +306,7 @@ rag.knowledge.default-tenant=asset
               ├── 成功 → 存新双 token → 重放失败请求 + 队列里并发的失败请求
               └── 失败 → 清本地 → 跳 /login
 ```
+
 SSE fetch 401 同样在 Chat.vue 里做了 inline refresh 兜底（成功提示用户重发，失败跳登录）。
 
 ### 业务层数据隔离

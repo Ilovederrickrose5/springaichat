@@ -1,6 +1,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import Login from '@/views/Login.vue'
-import Chat from '@/views/Chat.vue'
+
+// 路由懒加载：按需加载页面组件，减小首屏包体积
+const Login = () => import('@/views/Login.vue')
+const Chat = () => import('@/views/Chat.vue')
 
 const routes = [
   {

@@ -1,5 +1,6 @@
 import axios from 'axios'
 import router from '../router'
+import { refreshToken as refreshAccessToken } from './auth'
 
 // ===== 本地存储 key =====
 const TOKEN_KEY = 'token'
@@ -106,8 +107,8 @@ instance.interceptors.response.use(
         return Promise.reject(error)
       }
 
-      const refreshToken = getRefreshToken()
-      if (!refreshToken) {
+      const refreshTokenValue = getRefreshToken()
+      if (!refreshTokenValue) {
         // 没有 refreshToken，直接退登录
         clearAllAuth()
         router.push('/login')
@@ -122,25 +123,12 @@ instance.interceptors.response.use(
       }
 
       isRefreshing = true
-      // 用一个「临时裸 axios」直接发起 refresh，不要再走我们的拦截器（防死循环）
-      return axios.post('http://localhost:8080/api/auth/refresh', { refreshToken }, {
-        timeout: 15000
-      }).then(res => {
-        const body = res.data
-        if (body && body.success) {
-          saveAuthTokens(body)
-          const newToken = getAccessToken()
-          // 把当前这个失败的请求补上新的 Token 再发一次
-          originalRequest.headers.Authorization = `Bearer ${newToken}`
-          runPendingRequests(null, newToken)
-          return instance.request(originalRequest)
-        } else {
-          // 后端告诉我们刷新失败
-          runPendingRequests(error || new Error('refresh failed'), null)
-          clearAllAuth()
-          router.push('/login')
-          return Promise.reject(error)
-        }
+      // 调用公共 refresh 函数（内部用裸 axios，不走拦截器，防死循环）
+      return refreshAccessToken().then(newToken => {
+        // 把当前这个失败的请求补上新的 Token 再发一次
+        originalRequest.headers.Authorization = `Bearer ${newToken}`
+        runPendingRequests(null, newToken)
+        return instance.request(originalRequest)
       }).catch(refreshErr => {
         runPendingRequests(refreshErr, null)
         clearAllAuth()

@@ -18,5 +18,18 @@ export default defineConfig({
       }
     },
     historyApiFallback: true
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return
+          if (id.includes('vue') || id.includes('vue-router')) return 'vendor-vue'
+          if (id.includes('element-plus') || id.includes('@element-plus/icons-vue')) return 'vendor-element'
+          if (id.includes('axios')) return 'vendor-axios'
+          return 'vendor-others'
+        }
+      }
+    }
   }
 })
