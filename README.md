@@ -177,10 +177,10 @@ docker compose up -d
 | 变量 | 说明 | 默认值 / 备注 |
 |------|------|---------------|
 | `ALIYUN_API_KEY` | 阿里云百炼 API Key | 必填，`sk-` 开头；缺失会导致 embedding 401，启动失败 |
-| `JWT_SECRET` | JWT 签名密钥 | 至少 32 字符；生产环境必须替换默认值 |
+| `JWT_SECRET` | JWT 签名密钥 | 无默认值。至少 32 字符；dev 未配置时启动自动生成本次进程内随机密钥并告警，prod 未配置或过短则**拒绝启动** |
 | `DB_URL` | JDBC 连接串 | 默认 `jdbc:mysql://localhost:3307/ai_chat_db?...` |
 | `DB_USERNAME` | 数据库用户名 | 默认 `root` |
-| `MYSQL_PASSWORD` | 数据库密码 | 默认 `123456`（与 docker-compose 一致） |
+| `MYSQL_PASSWORD` | 数据库密码 | 无默认值，**必须设置**（本地 Docker 为 `123456`） |
 | `SPRING_PROFILES_ACTIVE` | 运行环境 | 默认 `dev` |
 
 Windows 临时会话注入（避免读不到系统变量）：
@@ -188,7 +188,10 @@ Windows 临时会话注入（避免读不到系统变量）：
 ```powershell
 $env:ALIYUN_API_KEY = [Environment]::GetEnvironmentVariable('ALIYUN_API_KEY','User')
 $env:ALIYUN_API_KEY.Length   # 应输出 117 左右的长度
+$env:MYSQL_PASSWORD = '123456'   # 与 docker-compose.yml 保持一致
 ```
+
+> **JWT_SECRET 说明**：本地不配置时，dev 环境会生成随机密钥并打印 WARN，属于预期行为——**重启后端后旧 Token 全部失效，需要重新登录**，前端会自动跳转登录页。生产环境（`SPRING_PROFILES_ACTIVE=prod`）必须显式配置不少于 32 字符的 `JWT_SECRET`，否则启动失败。
 
 ### 5.4 启动后端与前端
 
@@ -225,7 +228,7 @@ server.port=8080
 
 # MySQL（Docker 映射到 3307）
 spring.datasource.url=${DB_URL:jdbc:mysql://localhost:3307/ai_chat_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true&characterEncoding=UTF-8}
-spring.datasource.password=${MYSQL_PASSWORD:123456}
+spring.datasource.password=${MYSQL_PASSWORD:}
 spring.jpa.hibernate.ddl-auto=update
 
 # Redis（缓存 + 向量库）
@@ -243,6 +246,7 @@ spring.ai.vectorstore.redis.prefix=rag:vector:
 spring.ai.vectorstore.redis.initialize-schema=true
 
 # JWT 双 Token
+jwt.secret=${JWT_SECRET:}          # 为空时 dev 生成随机密钥、prod 拒绝启动
 jwt.access-expiration=1800000      # 30 分钟
 jwt.refresh-expiration=604800000   # 7 天
 
@@ -375,9 +379,9 @@ Chat.vue → useStreamChat.sendStream()
 ## 11. 已知限制
 
 - Redis Vector Store 检索结果不返回 `source` 元数据，因此不展示引用来源文件
-- 知识库仅在启动时增量加载（按内容 Hash 去重），运行期新增文档需重启
+- 单元测试覆盖核心分支：`ChatServiceTest`（长度校验、归属校验、流式不重复输出、Redis 故障降级）、`JwtSecretValidatorTest`、`sseParser.test.js`；真实中间件集成测试待补
+- 知识库仅在启动时增量加载（按文件内容 Hash 去重），运行期新增文档需重启
 - `start-all.bat` 与 `docker-compose.yml` 都会占用 6379，需择一
-- 无单元测试 / 集成测试覆盖
 
 ---
 

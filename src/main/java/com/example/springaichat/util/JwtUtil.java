@@ -1,5 +1,6 @@
 package com.example.springaichat.util;
 
+import com.example.springaichat.config.JwtSecretProvider;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
@@ -34,14 +35,17 @@ public class JwtUtil {
     private static final String CLAIM_TYPE = "type";
     private static final String CLAIM_JTI = "jti";
 
-    @Value("${jwt.secret}")
-    private String secret;
+    private final JwtSecretProvider secretProvider;
 
     @Value("${jwt.access-expiration:1800000}")
     private Long accessExpiration;
 
     @Value("${jwt.refresh-expiration:604800000}")
     private Long refreshExpiration;
+
+    public JwtUtil(JwtSecretProvider secretProvider) {
+        this.secretProvider = secretProvider;
+    }
 
     // ==================== 提取声明 ====================
 
@@ -67,7 +71,7 @@ public class JwtUtil {
     }
 
     private Claims extractAllClaims(String token) {
-        SecretKey key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
+        SecretKey key = Keys.hmacShaKeyFor(secretProvider.getSecret().getBytes(StandardCharsets.UTF_8));
         return Jwts.parser()
                 .verifyWith(key)
                 .build()
@@ -109,7 +113,7 @@ public class JwtUtil {
     }
 
     private String createToken(Map<String, Object> claims, String subject, Long expiration) {
-        SecretKey key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
+        SecretKey key = Keys.hmacShaKeyFor(secretProvider.getSecret().getBytes(StandardCharsets.UTF_8));
         return Jwts.builder()
                 .claims(claims)
                 .subject(subject)
