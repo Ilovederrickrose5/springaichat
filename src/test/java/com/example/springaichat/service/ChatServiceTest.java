@@ -13,16 +13,22 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -37,6 +43,15 @@ class ChatServiceTest {
     private ChatClient.Builder chatClientBuilder;
 
     @Mock
+    private ChatClient chatClient;
+
+    @Mock
+    private ChatClient.ChatClientRequestSpec chatClientRequestSpec;
+
+    @Mock
+    private ChatClient.StreamResponseSpec streamResponseSpec;
+
+    @Mock
     private ConversationRepository conversationRepository;
 
     @Mock
@@ -49,6 +64,7 @@ class ChatServiceTest {
 
     @BeforeEach
     void setUp() {
+        lenient().when(chatClientBuilder.build()).thenReturn(chatClient);
         chatService = new ChatService(chatClientBuilder, conversationRepository, messageRepository, redisTemplate);
         // @Value 字段集中注入，后续字段改名只需改这一处
         ReflectionTestUtils.setField(chatService, "maxHistorySize", 20);
@@ -98,5 +114,42 @@ class ChatServiceTest {
 
         verify(messageRepository).delete(message);
         verify(redisTemplate).delete("chat:history:5");
+    }
+
+    @Test
+    void streamMessage_doesNotRetryAfterPartialOutput() {
+        stubConversation(5L, 1L);
+        when(messageRepository.findByConversationIdOrderByCreateTimeAsc(5L)).thenReturn(List.of());
+        stubStreaming(Flux.just("A").concatWith(Flux.error(new RuntimeException("Connection reset"))));
+
+        List<String> received = new ArrayList<>();
+        AtomicReference<Throwable> errorRef = new AtomicReference<>();
+
+        chatService.streamMessage(1L, new MessageRequest(5L, "你好"))
+                .doOnNext(received::add)
+                .onErrorResume(e -> {
+                    errorRef.set(e);
+                    return Mono.empty();
+                })
+                .then()
+                .block();
+
+        // 已输出 "A" 后失败：不得重试，否则前端会收到重复内容
+        assertThat(received).containsExactly("A");
+        assertThat(errorRef.get()).hasMessageContaining("Connection reset");
+        verify(streamResponseSpec, times(1)).content();
+    }
+
+    private void stubConversation(Long conversationId, Long ownerId) {
+        Conversation conversation = new Conversation(conversationId, ownerId, "新对话",
+                LocalDateTime.now(), LocalDateTime.now());
+        lenient().when(conversationRepository.findById(conversationId)).thenReturn(Optional.of(conversation));
+    }
+
+    private void stubStreaming(Flux<String> flux) {
+        lenient().when(chatClient.prompt()).thenReturn(chatClientRequestSpec);
+        lenient().when(chatClientRequestSpec.messages(anyList())).thenReturn(chatClientRequestSpec);
+        lenient().when(chatClientRequestSpec.stream()).thenReturn(streamResponseSpec);
+        lenient().when(streamResponseSpec.content()).thenReturn(flux);
     }
 }

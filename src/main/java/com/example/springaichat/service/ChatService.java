@@ -455,18 +455,28 @@ public class ChatService {
             String userContent, Long conversationId) {
         int maxRetries = 2;
         java.util.concurrent.atomic.AtomicInteger retryCount = new java.util.concurrent.atomic.AtomicInteger(0);
+        // 累计已向前端发出的字符数：一旦有内容发出就不再自动重试，避免重复内容拼接
+        java.util.concurrent.atomic.AtomicInteger emittedChars = new java.util.concurrent.atomic.AtomicInteger(0);
 
-        return doStreamAiResponse(chatHistory, userContent, conversationId)
+        return doStreamAiResponse(chatHistory, userContent, conversationId, emittedChars)
                 .onErrorResume(error -> {
                     int currentRetry = retryCount.incrementAndGet();
-                    if (currentRetry <= maxRetries && isRetryableError(error)) {
-                        logger.warn("streamAiResponse retry {}/{}, conversationId={}",
-                                currentRetry, maxRetries, conversationId);
-                        return doStreamAiResponse(chatHistory, userContent, conversationId);
+                    boolean retryable = currentRetry <= maxRetries && isRetryableError(error);
+                    if (!retryable) {
+                        logger.error("streamAiResponse failed after {} attempts, conversationId={}",
+                                currentRetry, conversationId, error);
+                        return Flux.error(error);
                     }
-                    logger.error("streamAiResponse failed after {} retries, conversationId={}",
-                            currentRetry, conversationId, error);
-                    return Flux.error(error);
+                    if (emittedChars.get() > 0) {
+                        logger.warn("streamAiResponse skip retry: {} chars already emitted, conversationId={}",
+                                emittedChars.get(), conversationId, error);
+                        return Flux.error(error);
+                    }
+                    logger.warn("streamAiResponse retry {}/{}, conversationId={}",
+                            currentRetry, maxRetries, conversationId);
+                    Flux<String> retryFlux = doStreamAiResponse(chatHistory, userContent, conversationId, emittedChars);
+                    // 限流与服务端错误加退避，网络类错误保持立即重试
+                    return isBackoffError(error) ? retryFlux.delaySubscription(Duration.ofMillis(400)) : retryFlux;
                 });
     }
 
@@ -474,7 +484,8 @@ public class ChatService {
      * 实际执行流式调用
      */
     private Flux<String> doStreamAiResponse(List<Message> chatHistory,
-            String userContent, Long conversationId) {
+            String userContent, Long conversationId,
+            java.util.concurrent.atomic.AtomicInteger emittedChars) {
         StringBuilder fullResponse = new StringBuilder();
 
         Flux<String> responseFlux = chatClient.prompt()
@@ -483,6 +494,7 @@ public class ChatService {
                 .content()
                 .map(content -> {
                     fullResponse.append(content);
+                    emittedChars.addAndGet(content.length());
                     return content;
                 })
                 .doOnComplete(() -> {
@@ -514,6 +526,17 @@ public class ChatService {
                 message.contains("502") ||
                 message.contains("503") ||
                 message.contains("504"));
+    }
+
+    /**
+     * 判断是否需要退避后重试：仅限流（429）与服务端 5xx，网络类错误立即重试
+     */
+    private boolean isBackoffError(Throwable error) {
+        String message = error.getMessage();
+        if (message == null) {
+            return false;
+        }
+        return message.contains("429") || message.matches("(?s).*\\b5\\d\\d\\b.*");
     }
 
     /**
