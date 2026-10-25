@@ -44,3 +44,16 @@ build/
 
 # Log files
 *.log
+
+# 前端依赖与构建产物
+node_modules/
+frontend/dist/
+.vite/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 本地运行/调试产物
+logs/
+*.pid
+.DS_Store
