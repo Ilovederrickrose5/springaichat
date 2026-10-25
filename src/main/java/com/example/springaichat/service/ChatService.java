@@ -63,7 +63,7 @@ public class ChatService {
     @Value("${rag.retrieval.top-k:3}")
     private int ragTopK;
 
-    @Value("${rag.retrieval.similarity-threshold:0.45}")
+    @Value("${rag.retrieval.similarity-threshold:0.30}")
     private double ragSimilarityThreshold;
 
     @Autowired(required = false)
@@ -566,12 +566,14 @@ public class ChatService {
         systemMessage.append("你是一个企业资产管理系统的智能助手。\n\n");
 
         if (ragEnabled) {
-            systemMessage.append("回答必须完全基于以下参考资料：\n");
+            systemMessage.append("请参考以下内部资料回答用户问题：\n");
             systemMessage.append("------------------------\n");
-            systemMessage.append(ragContext.isEmpty() ? "[暂无相关参考资料]" : ragContext);
+            systemMessage.append(ragContext.isEmpty() ? "[暂无相关内部资料]" : ragContext);
             systemMessage.append("\n------------------------\n\n");
-            systemMessage.append("如果参考资料中没有相关信息，请明确告知\"根据知识库内容，我无法回答这个问题。\"，禁止编造任何信息。\n");
-            systemMessage.append("回答时要引用知识库中的具体内容作为依据。\n");
+            systemMessage.append("要求：\n");
+            systemMessage.append("1. 直接把答案讲清楚，不要提及“参考资料”“资料编号”“知识库”“来源”等字眼，也不要输出【参考资料1】这类引用标记。\n");
+            systemMessage.append("2. 答案必须以上述内部资料为依据，禁止编造资料中没有的信息。\n");
+            systemMessage.append("3. 如果内部资料中确实没有相关信息，直接说明“暂时没有查到相关内容”，并简要说明可以补充的方向。\n");
         } else {
             systemMessage.append("请用自然、友好的语言回答用户的问题。\n");
         }
@@ -586,8 +588,7 @@ public class ChatService {
         try {
             SearchRequest searchRequest = SearchRequest.query(query)
                     .withTopK(ragTopK)
-                    .withSimilarityThreshold(ragSimilarityThreshold)
-                    .withFilterExpression("tenant == 'asset'");
+                    .withSimilarityThreshold(ragSimilarityThreshold);
 
             List<Document> documents = vectorStore.similaritySearch(searchRequest);
 
@@ -601,9 +602,7 @@ public class ChatService {
             StringBuilder context = new StringBuilder();
             for (int i = 0; i < documents.size(); i++) {
                 Document doc = documents.get(i);
-                context.append("【参考资料").append(i + 1).append("】\n");
-                context.append("来源：").append(doc.getMetadata().getOrDefault("source", "unknown")).append("\n");
-                context.append("内容：").append(doc.getContent()).append("\n\n");
+                context.append(doc.getContent()).append("\n\n");
             }
 
             return context.toString();

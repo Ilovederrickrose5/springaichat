@@ -2,7 +2,9 @@
 chcp 65001 > nul
 title 启动企智通
 
-set PROJECT_ROOT=D:\Users\30776\IdeaProjects\springaichat
+:: 自动取脚本所在目录，避免换机器/换目录后路径失效
+set "PROJECT_ROOT=%~dp0"
+if "%PROJECT_ROOT:~-1%"=="\" set "PROJECT_ROOT=%PROJECT_ROOT:~0,-1%"
 set BACKEND_PORT=8080
 set FRONTEND_PORT=5173
 
@@ -26,11 +28,11 @@ if errorlevel 1 (
 timeout /t 3 /nobreak >nul
 
 echo 启动后端...
-start "Backend" cmd /k "cd /d "%PROJECT_ROOT%" && mvn spring-boot:run"
+start "Backend" /d "%PROJECT_ROOT%" cmd /k "mvn spring-boot:run"
 timeout /t 15 /nobreak >nul
 
 echo 启动前端...
-start "Frontend" cmd /k "cd /d "%PROJECT_ROOT%\frontend" && npm run dev"
+start "Frontend" /d "%PROJECT_ROOT%\frontend" cmd /k "npm run dev"
 
 echo.
 echo 全部启动完成

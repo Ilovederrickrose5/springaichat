@@ -146,56 +146,52 @@ export function useStreamChat(deps) {
         pendingBuffer = events.pop() || ''
 
         for (const event of events) {
-          for (const line of event.split(/\r?\n/)) {
-            if (line.startsWith('data:')) {
-              const parsedContent = line.slice(5).replace(/^\s/, '')
+          // 同一事件内的多行 data: 需用 \n 重新拼接（Spring 会把多行文本拆成多行 data:）
+          const dataLines = event.split(/\r?\n/).filter(line => line.startsWith('data:'))
+          if (!dataLines.length) continue
+          const parsedContent = dataLines.map(line => line.slice(5)).join('\n')
 
-              if (parsedContent.startsWith('{"error":')) {
-                try {
-                  const errorData = JSON.parse(parsedContent)
-                  ElMessage.error(`请求失败: ${errorData.error}`)
-                  messages.value.splice(aiMsgIndex, 1)
-                  return
-                } catch (e) { /* 非有效 JSON 错误，继续 */ }
-              }
+          if (parsedContent.startsWith('{"error":')) {
+            try {
+              const errorData = JSON.parse(parsedContent)
+              ElMessage.error(`请求失败: ${errorData.error}`)
+              messages.value.splice(aiMsgIndex, 1)
+              return
+            } catch (e) { /* 非有效 JSON 错误，继续 */ }
+          }
 
-              for (const char of parsedContent) {
-                if (controller.signal.aborted) break
-                while (isPaused.value) {
-                  messages.value[aiMsgIndex] = {
-                    ...messages.value[aiMsgIndex],
-                    status: 'paused'
-                  }
-                  await sleep(50)
-                }
-                if (streamingContent.value.length === 0) {
-                  streamingContent.value += char
-                  updateAiMessage(streamingContent.value, 'streaming')
-                } else {
-                  streamingContent.value += char
-                  updateAiMessage(streamingContent.value)
-                }
-                if (isAtBottom.value) scrollToBottom()
-                await sleep(typingSpeed.value)
+          for (const char of parsedContent) {
+            if (controller.signal.aborted) break
+            while (isPaused.value) {
+              messages.value[aiMsgIndex] = {
+                ...messages.value[aiMsgIndex],
+                status: 'paused'
               }
+              await sleep(50)
             }
+            if (streamingContent.value.length === 0) {
+              streamingContent.value += char
+              updateAiMessage(streamingContent.value, 'streaming')
+            } else {
+              streamingContent.value += char
+              updateAiMessage(streamingContent.value)
+            }
+            if (isAtBottom.value) scrollToBottom()
+            await sleep(typingSpeed.value)
           }
         }
       }
 
       // 缓冲区剩余数据
       if (pendingBuffer.trim()) {
-        for (const line of pendingBuffer.split(/\r?\n/)) {
-          if (line.startsWith('data:')) {
-            const tail = line.slice(5).replace(/^\s/, '')
-            for (const char of tail) {
-              if (controller.signal.aborted) break
-              streamingContent.value += char
-              updateAiMessage(streamingContent.value)
-              if (isAtBottom.value) scrollToBottom()
-              await sleep(typingSpeed.value)
-            }
-          }
+        const tailLines = pendingBuffer.split(/\r?\n/).filter(line => line.startsWith('data:'))
+        const tail = tailLines.map(line => line.slice(5)).join('\n')
+        for (const char of tail) {
+          if (controller.signal.aborted) break
+          streamingContent.value += char
+          updateAiMessage(streamingContent.value)
+          if (isAtBottom.value) scrollToBottom()
+          await sleep(typingSpeed.value)
         }
       }
 
