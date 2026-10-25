@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import { parseSseEvents } from '../utils/sseParser.js'
 
 /**
  * SSE 流式聊天 composable。
@@ -142,15 +143,10 @@ export function useStreamChat(deps) {
         if (done) break
 
         pendingBuffer += decoder.decode(value, { stream: true })
-        const events = pendingBuffer.split(/\r?\n\r?\n/)
-        pendingBuffer = events.pop() || ''
+        const { chunks, rest } = parseSseEvents(pendingBuffer)
+        pendingBuffer = rest
 
-        for (const event of events) {
-          // 同一事件内的多行 data: 需用 \n 重新拼接（Spring 会把多行文本拆成多行 data:）
-          const dataLines = event.split(/\r?\n/).filter(line => line.startsWith('data:'))
-          if (!dataLines.length) continue
-          const parsedContent = dataLines.map(line => line.slice(5)).join('\n')
-
+        for (const parsedContent of chunks) {
           if (parsedContent.startsWith('{"error":')) {
             try {
               const errorData = JSON.parse(parsedContent)
