@@ -8,14 +8,18 @@ import com.example.springaichat.repository.MessageRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.test.util.ReflectionTestUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,8 +30,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -138,6 +146,33 @@ class ChatServiceTest {
         assertThat(received).containsExactly("A");
         assertThat(errorRef.get()).hasMessageContaining("Connection reset");
         verify(streamResponseSpec, times(1)).content();
+    }
+
+    @Test
+    void streamMessage_persistsAiMessageWhenRedisWriteFails() {
+        stubConversation(5L, 1L);
+        when(messageRepository.findByConversationIdOrderByCreateTimeAsc(5L)).thenReturn(List.of());
+        stubStreaming(Flux.just("回答"));
+
+        @SuppressWarnings("unchecked")
+        ValueOperations<String, Object> valueOperations = mock(ValueOperations.class);
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        doThrow(new RedisConnectionFailureException("redis down"))
+                .when(valueOperations).set(anyString(), any(), any(Duration.class));
+
+        List<String> received = chatService.streamMessage(1L, new MessageRequest(5L, "你好"))
+                .collectList()
+                .block();
+
+        // 缓存写失败不应影响流式响应
+        assertThat(received).containsExactly("回答");
+
+        // 数据库落库必须仍然发生
+        ArgumentCaptor<com.example.springaichat.entity.Message> captor =
+                ArgumentCaptor.forClass(com.example.springaichat.entity.Message.class);
+        verify(messageRepository, timeout(2000).atLeastOnce()).save(captor.capture());
+        assertThat(captor.getAllValues())
+                .anyMatch(m -> "assistant".equals(m.getRole()) && "回答".equals(m.getContent()));
     }
 
     private void stubConversation(Long conversationId, Long ownerId) {

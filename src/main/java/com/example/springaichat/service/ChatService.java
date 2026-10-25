@@ -5,7 +5,6 @@ import com.example.springaichat.dto.MessageResponse;
 import com.example.springaichat.entity.Conversation;
 import com.example.springaichat.repository.ConversationRepository;
 import com.example.springaichat.repository.MessageRepository;
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -259,8 +258,9 @@ public class ChatService {
         try {
             String historyJson = objectMapper.writeValueAsString(chatHistory);
             redisTemplate.opsForValue().set(cacheKey, historyJson, Duration.ofHours(cacheExpireHours));
-        } catch (JsonProcessingException e) {
-            // Redis 写入失败，不抛异常，保证服务可用性
+        } catch (Exception e) {
+            // 缓存写入失败只丢缓存，不阻断数据库落库与流式响应
+            logger.warn("saveChatHistory failed, conversationId={}, cause={}", conversationId, e.toString());
         }
     }
 
@@ -550,15 +550,15 @@ public class ChatService {
         // 限制历史记录数量
         trimChatHistory(chatHistory);
 
-        // 保存到 Redis 缓存
-        saveChatHistory(conversationId, chatHistory);
-
-        // 保存AI响应到数据库
+        // 先落库：数据库是唯一数据源，不能被缓存故障阻断
         com.example.springaichat.entity.Message aiMessage = new com.example.springaichat.entity.Message();
         aiMessage.setConversationId(conversationId);
         aiMessage.setRole("assistant");
         aiMessage.setContent(aiContent);
         messageRepository.save(aiMessage);
+
+        // 再写缓存，失败只丢缓存
+        saveChatHistory(conversationId, chatHistory);
     }
 
     /**
