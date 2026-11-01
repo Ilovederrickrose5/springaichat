@@ -1,8 +1,11 @@
 package com.example.springaichat.dto;
 
+import jakarta.validation.constraints.NotEmpty;
+
 import java.util.List;
 
 public class BatchDeleteRequest {
+    @NotEmpty(message = "请选择要删除的消息")
     private List<Object> messageIds;
 
     public List<Object> getMessageIds() {

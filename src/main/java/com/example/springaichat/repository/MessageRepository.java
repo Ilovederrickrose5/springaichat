@@ -1,6 +1,7 @@
 package com.example.springaichat.repository;
 
 import com.example.springaichat.entity.Message;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -16,9 +17,19 @@ import java.util.List;
 public interface MessageRepository extends JpaRepository<Message, Long> {
 
     /**
-     * 根据会话ID查找所有消息，按创建时间正序
+     * 按自增主键排序：同一秒内写入的消息也能保证稳定顺序（create_time 精度可能只有秒）。
      */
-    List<Message> findByConversationIdOrderByCreateTimeAsc(Long conversationId);
+    List<Message> findByConversationIdOrderByIdAsc(Long conversationId);
+
+    /**
+     * 查询最新的一页消息（倒序取，调用方再反转）
+     */
+    List<Message> findByConversationIdOrderByIdDesc(Long conversationId, Pageable pageable);
+
+    /**
+     * 查询某个消息之前的一页消息（用于向上翻历史）
+     */
+    List<Message> findByConversationIdAndIdLessThanOrderByIdDesc(Long conversationId, Long beforeId, Pageable pageable);
 
     /**
      * 根据会话ID删除所有消息

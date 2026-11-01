@@ -3,6 +3,9 @@ package com.example.springaichat.service;
 import com.example.springaichat.dto.MessageRequest;
 import com.example.springaichat.dto.MessageResponse;
 import com.example.springaichat.entity.Conversation;
+import com.example.springaichat.exception.BusinessException;
+import com.example.springaichat.exception.ForbiddenException;
+import com.example.springaichat.exception.NotFoundException;
 import com.example.springaichat.repository.ConversationRepository;
 import com.example.springaichat.repository.MessageRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -19,16 +22,27 @@ import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.task.TaskExecutor;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.SignalType;
+import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 /**
@@ -44,6 +58,7 @@ public class ChatService {
     private final MessageRepository messageRepository;
     private final RedisTemplate<String, Object> redisTemplate;
     private final ObjectMapper objectMapper;
+    private final TaskExecutor chatTaskExecutor;
 
     @Value("${chat.max-history-size:20}")
     private int maxHistorySize;
@@ -92,12 +107,14 @@ public class ChatService {
     }
 
     public ChatService(ChatClient.Builder chatClientBuilder, ConversationRepository conversationRepository,
-            MessageRepository messageRepository, RedisTemplate<String, Object> redisTemplate) {
+            MessageRepository messageRepository, RedisTemplate<String, Object> redisTemplate,
+            @Qualifier("chatTaskExecutor") TaskExecutor chatTaskExecutor) {
         this.chatClient = chatClientBuilder.build();
         this.conversationRepository = conversationRepository;
         this.messageRepository = messageRepository;
         this.redisTemplate = redisTemplate;
         this.objectMapper = new ObjectMapper();
+        this.chatTaskExecutor = chatTaskExecutor;
     }
 
     /**
@@ -124,10 +141,10 @@ public class ChatService {
      */
     public Conversation getConversation(Long userId, Long conversationId) {
         Conversation conversation = conversationRepository.findById(conversationId)
-                .orElseThrow(() -> new RuntimeException("会话不存在"));
+                .orElseThrow(() -> new NotFoundException("会话不存在"));
 
         if (!conversation.getUserId().equals(userId)) {
-            throw new RuntimeException("无权访问该会话");
+            throw new ForbiddenException("无权访问该会话");
         }
 
         return conversation;
@@ -139,15 +156,15 @@ public class ChatService {
     @Transactional
     public void deleteMessage(Long userId, Long messageId) {
         com.example.springaichat.entity.Message message = messageRepository.findById(messageId)
-                .orElseThrow(() -> new RuntimeException("消息不存在"));
+                .orElseThrow(() -> new NotFoundException("消息不存在"));
 
         Long conversationId = message.getConversationId();
         getConversation(userId, conversationId);
 
         messageRepository.delete(message);
 
-        // 清理 Redis 缓存，下次访问时从数据库重新加载
-        deleteChatHistory(conversationId);
+        // 事务提交后再清理 Redis 缓存，避免回滚后缓存被误删、也避免在事务内 sleep 重试
+        deleteChatHistoryAfterCommit(conversationId);
     }
 
     /**
@@ -156,13 +173,13 @@ public class ChatService {
     @Transactional
     public void batchDeleteMessages(Long userId, List<Long> messageIds) {
         if (messageIds == null || messageIds.isEmpty()) {
-            throw new RuntimeException("消息ID列表不能为空");
+            throw new BusinessException("消息ID列表不能为空");
         }
 
         List<com.example.springaichat.entity.Message> messages = messageRepository.findAllById(messageIds);
 
         if (messages.isEmpty()) {
-            throw new RuntimeException("未找到任何消息");
+            throw new NotFoundException("未找到任何消息");
         }
 
         Long conversationId = messages.get(0).getConversationId();
@@ -170,14 +187,14 @@ public class ChatService {
 
         for (com.example.springaichat.entity.Message message : messages) {
             if (!message.getConversationId().equals(conversationId)) {
-                throw new RuntimeException("所有消息必须属于同一个会话");
+                throw new BusinessException("所有消息必须属于同一个会话");
             }
         }
 
         messageRepository.deleteAll(messages);
 
-        // 清理 Redis 缓存，下次访问时从数据库重新加载
-        deleteChatHistory(conversationId);
+        // 事务提交后再清理 Redis 缓存，避免回滚后缓存被误删、也避免在事务内 sleep 重试
+        deleteChatHistoryAfterCommit(conversationId);
     }
 
     /**
@@ -194,18 +211,41 @@ public class ChatService {
         conversationRepository.delete(conversation);
 
         // 清理 Redis 缓存
-        deleteChatHistory(conversationId);
+        deleteChatHistoryAfterCommit(conversationId);
     }
 
     /**
      * 获取会话的所有消息
      */
     public List<MessageResponse> getMessages(Long userId, Long conversationId) {
+        return getMessages(userId, conversationId, null, null);
+    }
+
+    /**
+     * 分页获取消息。limit 为空时保持旧行为（返回全部），避免影响已有调用方。
+     * 返回结果始终按时间正序，beforeId 用于向上加载更早的历史。
+     */
+    public List<MessageResponse> getMessages(Long userId, Long conversationId, Long beforeId, Integer limit) {
         // 验证会话归属
         getConversation(userId, conversationId);
 
-        return messageRepository.findByConversationIdOrderByCreateTimeAsc(conversationId)
-                .stream()
+        if (limit == null && beforeId == null) {
+            return messageRepository.findByConversationIdOrderByIdAsc(conversationId)
+                    .stream()
+                    .map(this::convertToMessageResponse)
+                    .collect(Collectors.toList());
+        }
+
+        int pageSize = Math.min(Math.max(limit == null ? 100 : limit, 1), 500);
+        Pageable pageable = PageRequest.of(0, pageSize);
+        List<com.example.springaichat.entity.Message> page = beforeId == null
+                ? messageRepository.findByConversationIdOrderByIdDesc(conversationId, pageable)
+                : messageRepository.findByConversationIdAndIdLessThanOrderByIdDesc(conversationId, beforeId, pageable);
+
+        List<com.example.springaichat.entity.Message> ordered = new ArrayList<>(page);
+        Collections.reverse(ordered);
+
+        return ordered.stream()
                 .map(this::convertToMessageResponse)
                 .collect(Collectors.toList());
     }
@@ -225,6 +265,8 @@ public class ChatService {
                         });
                 List<Message> history = toMessages(cached);
                 if (!history.isEmpty()) {
+                    // 缓存里可能是历史版本写入的未裁剪数据，命中时再裁剪一次
+                    trimChatHistory(history);
                     return history;
                 }
             }
@@ -252,8 +294,12 @@ public class ChatService {
         List<Message> history = new ArrayList<>();
 
         try {
-            List<com.example.springaichat.entity.Message> dbMessages = messageRepository
-                    .findByConversationIdOrderByCreateTimeAsc(conversationId);
+            // 上下文最终只保留 maxHistorySize 条，没必要把整个会话的消息都读进内存。
+            // 按 id 倒序取最近一页再反转；多取 2 条用于裁剪时对齐 user/assistant 边界。
+            Pageable recentPage = PageRequest.of(0, Math.max(maxHistorySize + 2, 10));
+            List<com.example.springaichat.entity.Message> dbMessages = new ArrayList<>(messageRepository
+                    .findByConversationIdOrderByIdDesc(conversationId, recentPage));
+            Collections.reverse(dbMessages);
 
             for (com.example.springaichat.entity.Message dbMsg : dbMessages) {
                 if ("user".equals(dbMsg.getRole())) {
@@ -326,6 +372,22 @@ public class ChatService {
     }
 
     /**
+     * 缓存删除放到事务提交之后执行：事务回滚时缓存保持原样，重试的 sleep 也不会占用数据库连接。
+     */
+    private void deleteChatHistoryAfterCommit(Long conversationId) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    deleteChatHistory(conversationId);
+                }
+            });
+        } else {
+            deleteChatHistory(conversationId);
+        }
+    }
+
+    /**
      * 从 Redis 缓存删除聊天历史（带重试机制）
      */
     private void deleteChatHistory(Long conversationId) {
@@ -361,9 +423,9 @@ public class ChatService {
     }
 
     /**
-     * 发送消息并获取AI响应（同步方式）
+     * 发送消息并获取AI响应（同步方式）。
+     * 不开启事务：模型调用可能持续数秒，包在事务里会长期占用数据库连接。
      */
-    @Transactional
     public MessageResponse sendMessage(Long userId, MessageRequest request) {
         validateRequest(request);
 
@@ -398,19 +460,20 @@ public class ChatService {
         // 限制历史记录数量
         trimChatHistory(chatHistory);
 
-        // 保存到 Redis 缓存
-        saveChatHistory(conversationId, chatHistory);
-
-        // 保存AI响应
+        // 先落库：数据库是唯一数据源
         com.example.springaichat.entity.Message aiMessage = new com.example.springaichat.entity.Message();
         aiMessage.setConversationId(conversationId);
         aiMessage.setRole("assistant");
         aiMessage.setContent(aiResponse);
         messageRepository.save(aiMessage);
 
+        // 再写缓存，缓存失败不影响主流程
+        saveChatHistory(conversationId, chatHistory);
+
         // 更新会话的更新时间和标题
         conversationRepository.findById(conversationId).ifPresent(conversation -> {
             conversation.setTitle(generateTitle(request.getContent(), conversation.getTitle()));
+            conversation.setUpdateTime(LocalDateTime.now());
             conversationRepository.save(conversation);
         });
 
@@ -445,67 +508,70 @@ public class ChatService {
         final Long finalConversationId = conversationId;
         final String userContent = request.getContent();
 
-        // 先同步读取历史，再异步落库用户消息：保证模型入参里的历史不包含当前这条消息
+        // 先同步读取历史，再落库用户消息：保证模型入参里的历史不包含当前这条消息
         List<Message> chatHistory = getOrCreateChatHistory(finalConversationId);
 
-        // 异步保存用户消息，不阻塞首字响应
-        CompletableFuture.runAsync(() -> {
-            try {
-                saveUserMessageAsync(finalConversationId, userContent);
-            } catch (Exception e) {
-                logger.error("Failed to save user message asynchronously", e);
-            }
-        });
+        // 单条本地 INSERT 是毫秒级操作，同步落库可以保证“问题一定存在、顺序稳定”，
+        // 相对于模型首字延迟可以忽略
+        saveUserMessage(finalConversationId, userContent);
 
-        // 异步更新会话标题，不阻塞首字响应
-        CompletableFuture.runAsync(() -> {
-            try {
-                updateConversationTitleAsync(finalConversationId, userContent);
-            } catch (Exception e) {
-                logger.error("Failed to update conversation title asynchronously", e);
-            }
-        });
+        // 非关键步骤异步：使用专用线程池，避免阻塞 ForkJoinPool.commonPool()
+        scheduleTitleUpdate(finalConversationId, userContent);
 
         return streamAiResponse(chatHistory, userContent, finalConversationId);
     }
 
     private void validateRequest(MessageRequest request) {
         if (request == null) {
-            throw new RuntimeException("请求不能为空");
+            throw new BusinessException("请求不能为空");
         }
         String content = request.getContent();
         if (content == null || content.isBlank()) {
-            throw new RuntimeException("消息内容不能为空");
+            throw new BusinessException("消息内容不能为空");
         }
         if (content.length() > maxMessageLength) {
-            throw new RuntimeException("消息长度不能超过" + maxMessageLength + "个字符");
+            throw new BusinessException("消息长度不能超过" + maxMessageLength + "个字符");
         }
     }
 
-    /**
-     * 异步保存用户消息。由同类内部调用，事务注解不会生效，单条 save 本身已足够。
-     */
-    public void saveUserMessageAsync(Long conversationId, String content) {
+    private void saveUserMessage(Long conversationId, String content) {
         com.example.springaichat.entity.Message userMessage = new com.example.springaichat.entity.Message();
         userMessage.setConversationId(conversationId);
         userMessage.setRole("user");
         userMessage.setContent(content);
         messageRepository.save(userMessage);
-        logger.debug("User message saved asynchronously, conversationId={}", conversationId);
+        logger.debug("User message saved, conversationId={}", conversationId);
     }
 
     /**
-     * 异步更新会话标题。同样由同类内部调用，不依赖事务代理。
+     * 异步更新会话标题与更新时间。标题只在首条消息时生成，但 updateTime 每轮都要刷新，
+     * 否则会话列表按 updateTime 排序时不会把最近聊过的会话顶到前面。
      */
-    public void updateConversationTitleAsync(Long conversationId, String userContent) {
+    private void scheduleTitleUpdate(Long conversationId, String userContent) {
+        try {
+            chatTaskExecutor.execute(() -> {
+                try {
+                    updateConversationTitle(conversationId, userContent);
+                } catch (Exception e) {
+                    logger.error("Failed to update conversation title asynchronously", e);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            // 线程池满时降级为同步执行：标题更新不是关键路径，但不能因此丢更新
+            logger.warn("chatTaskExecutor rejected title update, running inline, conversationId={}", conversationId);
+            updateConversationTitle(conversationId, userContent);
+        }
+    }
+
+    private void updateConversationTitle(Long conversationId, String userContent) {
         conversationRepository.findById(conversationId).ifPresent(conversation -> {
             String newTitle = generateTitle(userContent, conversation.getTitle());
             if (!newTitle.equals(conversation.getTitle())) {
                 conversation.setTitle(newTitle);
-                conversationRepository.save(conversation);
-                logger.debug("Conversation title updated asynchronously, conversationId={}, title={}", conversationId,
-                        newTitle);
             }
+            conversation.setUpdateTime(LocalDateTime.now());
+            conversationRepository.save(conversation);
+            logger.debug("Conversation touched, conversationId={}, title={}", conversationId, newTitle);
         });
     }
 
@@ -528,10 +594,23 @@ public class ChatService {
         java.util.concurrent.atomic.AtomicInteger retryCount = new java.util.concurrent.atomic.AtomicInteger(0);
         // 累计已向前端发出的字符数：一旦有内容发出就不再自动重试，避免重复内容拼接
         java.util.concurrent.atomic.AtomicInteger emittedChars = new java.util.concurrent.atomic.AtomicInteger(0);
-        // RAG 检索只做一次，重试时复用同一份请求消息，避免重复 Embedding 调用
-        List<Message> requestMessages = buildMessages(chatHistory, userContent);
+        // RAG 检索（含一次 Embedding 网络调用）延迟到订阅时执行，且只做一次；
+        // 重试时复用同一份请求消息，避免重复 Embedding 调用
+        java.util.concurrent.atomic.AtomicReference<List<Message>> requestMessagesRef =
+                new java.util.concurrent.atomic.AtomicReference<>();
 
-        return doStreamAiResponse(requestMessages, chatHistory, userContent, conversationId, emittedChars)
+        java.util.function.Supplier<Flux<String>> attempt = () -> {
+            List<Message> requestMessages = requestMessagesRef.get();
+            if (requestMessages == null) {
+                requestMessages = buildMessages(chatHistory, userContent);
+                requestMessagesRef.set(requestMessages);
+            }
+            return doStreamAiResponse(requestMessages, chatHistory, userContent, conversationId, emittedChars);
+        };
+
+        // subscribeOn：把向量检索等阻塞调用从 Servlet 请求线程移到弹性线程池
+        return Flux.defer(attempt)
+                .subscribeOn(Schedulers.boundedElastic())
                 .onErrorResume(error -> {
                     int currentRetry = retryCount.incrementAndGet();
                     boolean retryable = currentRetry <= maxRetries && isRetryableError(error);
@@ -547,8 +626,7 @@ public class ChatService {
                     }
                     logger.warn("streamAiResponse retry {}/{}, conversationId={}",
                             currentRetry, maxRetries, conversationId);
-                    Flux<String> retryFlux = doStreamAiResponse(requestMessages, chatHistory, userContent,
-                            conversationId, emittedChars);
+                    Flux<String> retryFlux = Flux.defer(attempt);
                     // 限流与服务端错误加退避，网络类错误保持立即重试
                     return isBackoffError(error) ? retryFlux.delaySubscription(Duration.ofMillis(400)) : retryFlux;
                 });
@@ -561,11 +639,14 @@ public class ChatService {
             List<Message> chatHistory, String userContent, Long conversationId,
             java.util.concurrent.atomic.AtomicInteger emittedChars) {
         StringBuilder fullResponse = new StringBuilder();
+        AtomicBoolean persisted = new AtomicBoolean(false);
 
         return chatClient.prompt()
                 .messages(requestMessages)
                 .stream()
                 .content()
+                // 落库/写缓存是阻塞操作，切到弹性线程池，避免占用 Reactor Netty 的事件循环
+                .publishOn(Schedulers.boundedElastic())
                 .map(content -> {
                     fullResponse.append(content);
                     emittedChars.addAndGet(content.length());
@@ -574,10 +655,28 @@ public class ChatService {
                 .doOnComplete(() -> {
                     logger.info("streamAiResponse completed, conversationId={}, responseLength={}",
                             conversationId, fullResponse.length());
-                    saveAiResponse(conversationId, fullResponse.toString(), chatHistory, userContent);
+                    persistResponseOnce(persisted, conversationId, fullResponse, chatHistory, userContent);
                 })
                 .doOnError(error -> logger.error(
-                        "streamAiResponse failed, conversationId=" + conversationId, error));
+                        "streamAiResponse failed, conversationId=" + conversationId, error))
+                .doFinally(signal -> {
+                    // 客户端断开 / 上游异常时也把已经生成的部分回答落库，避免刷新后内容消失
+                    if (signal != SignalType.ON_COMPLETE) {
+                        persistResponseOnce(persisted, conversationId, fullResponse, chatHistory, userContent);
+                    }
+                });
+    }
+
+    private void persistResponseOnce(AtomicBoolean persisted, Long conversationId, StringBuilder fullResponse,
+            List<Message> chatHistory, String userContent) {
+        if (fullResponse.length() == 0 || !persisted.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            saveAiResponse(conversationId, fullResponse.toString(), chatHistory, userContent);
+        } catch (Exception e) {
+            logger.error("Failed to save AI response, conversationId={}", conversationId, e);
+        }
     }
 
     /**
@@ -724,23 +823,38 @@ public class ChatService {
      * 限制历史记录数量（同时考虑消息数量和Token数量）
      */
     private void trimChatHistory(List<Message> chatHistory) {
-        // 先按消息数量限制
-        while (chatHistory.size() > maxHistorySize) {
-            if (chatHistory.size() > 1) {
-                chatHistory.remove(1);
-            } else {
-                break;
-            }
+        if (chatHistory == null || chatHistory.isEmpty()) {
+            return;
         }
 
-        // 再按Token数量限制（中文约2字符=1token，英文约4字符=1token）
-        while (chatHistory.size() > 1) {
-            int totalTokens = estimateTokens(chatHistory);
-            if (totalTokens <= maxTokens) {
-                break;
-            }
-            chatHistory.remove(1);
+        // 只有列表首位真正是 SystemMessage 时才保护它；
+        // 从缓存/数据库加载的历史首位是普通消息，不能按旧逻辑跳过 index 0。
+        int prefix = isSystemMessage(chatHistory.get(0)) ? 1 : 0;
+
+        // 1. 按消息数量上限裁剪，从最旧的一条开始删
+        while (chatHistory.size() - prefix > maxHistorySize) {
+            chatHistory.remove(prefix);
         }
+
+        // 2. 按 Token 上限裁剪：总量只算一次，之后逐条递减，避免 O(n²) 重复估算
+        int totalTokens = estimateTokens(chatHistory);
+        while (chatHistory.size() - prefix > 1 && totalTokens > maxTokens) {
+            totalTokens -= estimateMessageTokens(chatHistory.get(prefix));
+            chatHistory.remove(prefix);
+        }
+
+        // 3. 裁剪后必须以用户消息开头，否则会留下没有对应提问的孤立回答
+        while (chatHistory.size() - prefix > 0 && !isUserMessage(chatHistory.get(prefix))) {
+            chatHistory.remove(prefix);
+        }
+    }
+
+    private boolean isSystemMessage(Message message) {
+        return message.getMessageType() == MessageType.SYSTEM;
+    }
+
+    private boolean isUserMessage(Message message) {
+        return message.getMessageType() == MessageType.USER;
     }
 
     /**
@@ -749,15 +863,21 @@ public class ChatService {
     private int estimateTokens(List<Message> messages) {
         int total = 0;
         for (Message msg : messages) {
-            String content = msg.getContent();
-            if (content != null) {
-                // 粗略估算：中文按2字符=1token，英文按4字符=1token
-                int chineseChars = content.replaceAll("[\\x00-\\xff]", "").length();
-                int asciiChars = content.length() - chineseChars;
-                total += (chineseChars / 2) + (asciiChars / 4) + 4; // 每条消息额外加4token（角色等元数据）
-            }
+            total += estimateMessageTokens(msg);
         }
         return total;
+    }
+
+    private int estimateMessageTokens(Message message) {
+        String content = message.getContent();
+        if (content == null) {
+            return 0;
+        }
+        // 粗略估算：中文按2字符=1token，英文按4字符=1token
+        int chineseChars = content.replaceAll("[\\x00-\\xff]", "").length();
+        int asciiChars = content.length() - chineseChars;
+        // 每条消息额外加4token（角色等元数据）
+        return (chineseChars / 2) + (asciiChars / 4) + 4;
     }
 
     /**

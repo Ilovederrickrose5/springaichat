@@ -15,91 +15,70 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * 全局异常处理器
- * 统一处理所有 Controller 抛出的异常
+ * 全局异常处理器：只把明确的业务异常 message 返回给前端，
+ * 未预期的异常统一返回 500 固定文案并记录日志，避免泄露内部信息。
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
-    /**
-     * 处理业务异常（RuntimeException）
-     */
-    @ExceptionHandler(RuntimeException.class)
-    public ResponseEntity<Map<String, Object>> handleRuntimeException(RuntimeException e) {
-        Map<String, Object> response = new HashMap<>();
-        response.put("success", false);
-        response.put("message", e.getMessage());
-        response.put("timestamp", System.currentTimeMillis());
-        
-        // 根据异常类型返回不同的 HTTP 状态码
-        HttpStatus status = HttpStatus.BAD_REQUEST;
-        if (e.getMessage() != null && e.getMessage().contains("不存在")) {
-            status = HttpStatus.NOT_FOUND;
-        }
-        
-        return ResponseEntity.status(status).body(response);
+    @ExceptionHandler(BusinessException.class)
+    public ResponseEntity<Map<String, Object>> handleBusinessException(BusinessException e) {
+        return build(HttpStatus.BAD_REQUEST, e.getMessage());
     }
 
-    /**
-     * 处理认证失败异常
-     */
+    @ExceptionHandler(NotFoundException.class)
+    public ResponseEntity<Map<String, Object>> handleNotFoundException(NotFoundException e) {
+        return build(HttpStatus.NOT_FOUND, e.getMessage());
+    }
+
+    @ExceptionHandler(ForbiddenException.class)
+    public ResponseEntity<Map<String, Object>> handleForbiddenException(ForbiddenException e) {
+        return build(HttpStatus.FORBIDDEN, e.getMessage());
+    }
+
+    @ExceptionHandler(UnauthorizedException.class)
+    public ResponseEntity<Map<String, Object>> handleUnauthorizedException(UnauthorizedException e) {
+        return build(HttpStatus.UNAUTHORIZED, e.getMessage());
+    }
+
     @ExceptionHandler(BadCredentialsException.class)
     public ResponseEntity<Map<String, Object>> handleBadCredentialsException(BadCredentialsException e) {
-        Map<String, Object> response = new HashMap<>();
-        response.put("success", false);
-        response.put("message", "用户名或密码错误");
-        response.put("timestamp", System.currentTimeMillis());
-        
-        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(response);
+        return build(HttpStatus.UNAUTHORIZED, "用户名或密码错误");
     }
 
-    /**
-     * 处理权限不足异常
-     */
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<Map<String, Object>> handleAccessDeniedException(AccessDeniedException e) {
-        Map<String, Object> response = new HashMap<>();
-        response.put("success", false);
-        response.put("message", "权限不足，无法访问该资源");
-        response.put("timestamp", System.currentTimeMillis());
-        
-        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(response);
+        return build(HttpStatus.FORBIDDEN, "权限不足，无法访问该资源");
     }
 
-    /**
-     * 处理参数校验异常
-     */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<Map<String, Object>> handleValidationException(MethodArgumentNotValidException e) {
-        Map<String, Object> response = new HashMap<>();
-        response.put("success", false);
-        response.put("message", "参数校验失败");
-        
-        // 收集所有字段错误
         Map<String, String> errors = new HashMap<>();
         for (FieldError error : e.getBindingResult().getFieldErrors()) {
             errors.put(error.getField(), error.getDefaultMessage());
         }
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", false);
+        response.put("message", "参数校验失败");
         response.put("errors", errors);
         response.put("timestamp", System.currentTimeMillis());
-        
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
     }
 
-    /**
-     * 处理所有未捕获的异常
-     */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleException(Exception e) {
+        logger.error("Unhandled exception", e);
+        return build(HttpStatus.INTERNAL_SERVER_ERROR, "服务器内部错误，请稍后重试");
+    }
+
+    private ResponseEntity<Map<String, Object>> build(HttpStatus status, String message) {
         Map<String, Object> response = new HashMap<>();
         response.put("success", false);
-        response.put("message", "服务器内部错误，请稍后重试");
+        response.put("message", message);
         response.put("timestamp", System.currentTimeMillis());
-        
-        logger.error("Unhandled exception", e);
-
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
+        return ResponseEntity.status(status).body(response);
     }
 }

@@ -13,11 +13,14 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
+import org.springframework.data.redis.core.Cursor;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -26,8 +29,6 @@ import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
@@ -122,10 +123,19 @@ public class KnowledgeBaseService {
     }
 
     private void deleteAllVectors() {
-        Set<String> keys = redisTemplate.keys(vectorPrefix + "*");
-        if (keys == null || keys.isEmpty()) {
+        List<String> keys = new ArrayList<>();
+        // SCAN 代替 KEYS：KEYS 在 key 数量大时会阻塞 Redis 主线程
+        try (Cursor<String> cursor = redisTemplate.scan(ScanOptions.scanOptions()
+                .match(vectorPrefix + "*")
+                .count(1000)
+                .build())) {
+            cursor.forEachRemaining(keys::add);
+        }
+
+        if (keys.isEmpty()) {
             return;
         }
+
         List<String> ids = keys.stream()
                 .map(key -> key.substring(vectorPrefix.length()))
                 .collect(Collectors.toList());
@@ -157,8 +167,14 @@ public class KnowledgeBaseService {
                     "Recreate the Redis index if duplicates appear.", fileKey);
         }
 
-        storeProcessedDocIds(fileKey, documents, deleted ? List.of() : previousDocIds);
-        markFileAsProcessed(fileKey, contentHash);
+        if (deleted) {
+            storeProcessedDocIds(fileKey, documents);
+            markFileAsProcessed(fileKey, contentHash);
+        } else {
+            // 旧分块没删干净时不标记文件，下次启动会继续尝试；
+            // 新分块使用确定性 id，重复 add 只会覆盖，不会产生副本
+            logger.warn("Deletion failed for {}, keeping previous ids for retry on next startup", fileKey);
+        }
     }
 
     private List<Document> processFile(Resource resource, String fileKey) throws IOException {
@@ -183,8 +199,12 @@ public class KnowledgeBaseService {
             metadata.put("chunk_index", i);
             metadata.put("total_chunks", chunks.size());
 
-            // 显式指定 id，文件内容变化时可以按 id 删除旧分块后重新写入
-            enrichedChunks.add(new Document(UUID.randomUUID().toString(), chunk.getContent(), metadata));
+            // 确定性 id：同一文件同一分块内容每次得到相同 id，重复 add 是幂等的，
+            // 也不依赖“先写 id 记录再删除”的时序
+            enrichedChunks.add(new Document(
+                    buildDocumentId(fileKey, i, chunk.getContent()),
+                    chunk.getContent(),
+                    metadata));
         }
 
         logger.info("Split file {} into {} chunks", fileKey, enrichedChunks.size());
@@ -226,9 +246,35 @@ public class KnowledgeBaseService {
         }
     }
 
+    /**
+     * 用相对知识库根目录的路径作为 key，避免不同子目录下的同名文件互相覆盖。
+     */
     private String resolveFileKey(Resource resource) {
+        try {
+            String path = resource.getURL().getPath().replace('\\', '/');
+            int index = path.lastIndexOf(knowledgeDirectory);
+            if (index >= 0) {
+                return path.substring(index + knowledgeDirectory.length());
+            }
+        } catch (IOException e) {
+            logger.warn("Cannot resolve resource path for {}, fallback to filename", resource.getDescription());
+        }
         String fileName = resource.getFilename();
         return fileName != null ? fileName : resource.getDescription();
+    }
+
+    private String buildDocumentId(String fileKey, int chunkIndex, String content) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update(fileKey.getBytes(StandardCharsets.UTF_8));
+            digest.update((byte) '#');
+            digest.update(Integer.toString(chunkIndex).getBytes(StandardCharsets.UTF_8));
+            digest.update((byte) '#');
+            digest.update(content.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 algorithm not available", e);
+        }
     }
 
     private String getProcessedHash(String fileKey) {
@@ -266,10 +312,11 @@ public class KnowledgeBaseService {
         }
     }
 
-    private void storeProcessedDocIds(String fileKey, List<Document> documents, List<String> carryOverIds) {
+    private void storeProcessedDocIds(String fileKey, List<Document> documents) {
         try {
-            List<String> ids = new ArrayList<>(carryOverIds);
-            ids.addAll(documents.stream().map(Document::getId).collect(Collectors.toList()));
+            List<String> ids = documents.stream()
+                    .map(Document::getId)
+                    .collect(Collectors.toList());
             redisTemplate.opsForHash().put(PROCESSED_DOCS_KEY, fileKey, String.join(",", ids));
         } catch (Exception e) {
             logger.warn("Error storing processed document ids for {}: {}", fileKey, e.getMessage());

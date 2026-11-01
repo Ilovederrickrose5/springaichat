@@ -1,14 +1,391 @@
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+/* ============================================================
+   Design tokens — "Quiet intelligence"
+   暖灰纸感画布 + 墨色文本 + 低饱和钢蓝强调色
+   ============================================================ */
+:root {
+  color-scheme: light;
+
+  --font-sans: "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont,
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* 画布 / 表面 */
+  --canvas: #f4f3ef;
+  --canvas-deep: #ecebe5;
+  --surface: #ffffff;
+  --surface-soft: #fbfaf8;
+  --surface-tint: #f2f1ec;
+  --surface-glass: rgba(255, 255, 255, 0.78);
+
+  /* 文本 */
+  --ink-900: #1b1e24;
+  --ink-800: #262a32;
+  --ink-700: #3a3f49;
+  --ink-500: #6b7280;
+  --ink-400: #8d939e;
+  --ink-300: #b6bac2;
+
+  /* 线 / 强调 */
+  --line: rgba(27, 30, 36, 0.08);
+  --line-strong: rgba(27, 30, 36, 0.14);
+  --accent: #3f5b74;
+  --accent-deep: #32495d;
+  --accent-soft: #edf1f5;
+  --accent-wash: rgba(63, 91, 116, 0.08);
+  --warm: #b5835a;
+  --warm-soft: #f4ece2;
+  --danger: #b04a43;
+  --danger-soft: #fbf0ef;
+
+  /* 圆角 */
+  --radius-xs: 8px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+  --radius-2xl: 32px;
+  --radius-pill: 999px;
+
+  /* 阴影：低对比、多层 */
+  --shadow-xs: 0 1px 2px rgba(27, 30, 36, 0.04);
+  --shadow-sm: 0 1px 3px rgba(27, 30, 36, 0.05), 0 1px 2px rgba(27, 30, 36, 0.03);
+  --shadow-md: 0 12px 32px -16px rgba(27, 30, 36, 0.18), 0 2px 8px rgba(27, 30, 36, 0.04);
+  --shadow-lg: 0 28px 64px -24px rgba(27, 30, 36, 0.24), 0 4px 14px rgba(27, 30, 36, 0.05);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+
+  /* 动效 */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-soft: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 140ms;
+  --dur: 220ms;
+  --dur-slow: 380ms;
+
+  /* Element Plus 主题映射 */
+  --el-font-family: var(--font-sans);
+  --el-color-primary: #3f5b74;
+  --el-color-primary-light-3: #6d8499;
+  --el-color-primary-light-5: #92a4b4;
+  --el-color-primary-light-7: #b7c3cd;
+  --el-color-primary-light-8: #cad3da;
+  --el-color-primary-light-9: #e9edf1;
+  --el-color-primary-dark-2: #32495d;
+  --el-color-danger: #b04a43;
+  --el-color-danger-light-9: #fbf0ef;
+  --el-text-color-primary: var(--ink-900);
+  --el-text-color-regular: var(--ink-700);
+  --el-border-color: rgba(27, 30, 36, 0.14);
+  --el-border-radius-base: 10px;
+  --el-fill-color-blank: var(--surface);
 }
 
-html, body {
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
   height: 100%;
   overflow: hidden;
 }
 
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--ink-900);
+  background: var(--canvas);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
 #app {
   height: 100%;
+  position: relative;
+  isolation: isolate;
+}
+
+/* 画布景深：两团极淡的光晕，避免纯色平铺 */
+#app::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(1100px 620px at 8% -12%, rgba(63, 91, 116, 0.1), transparent 62%),
+    radial-gradient(900px 560px at 104% -4%, rgba(181, 131, 90, 0.08), transparent 58%),
+    linear-gradient(180deg, #f7f6f3 0%, #f1f0eb 100%);
+}
+
+::selection {
+  background: rgba(63, 91, 116, 0.18);
+  color: var(--ink-900);
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid rgba(63, 91, 116, 0.42);
+  outline-offset: 2px;
+}
+
+/* 细滚动条 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(27, 30, 36, 0.16) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(27, 30, 36, 0.16);
+  border: 2px solid transparent;
+  border-radius: var(--radius-pill);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(27, 30, 36, 0.28);
+}
+
+/* ============================================================
+   Motion primitives
+   ============================================================ */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.82);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.05);
+  }
+}
+
+@keyframes shimmer {
+  from {
+    background-position: -240px 0;
+  }
+  to {
+    background-position: 240px 0;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 统一的轻量交互反馈 */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  color: var(--ink-500);
+  background: transparent;
+  transition:
+    background-color var(--dur) var(--ease-soft),
+    color var(--dur) var(--ease-soft),
+    transform var(--dur-fast) var(--ease-soft);
+}
+
+.icon-btn:hover {
+  color: var(--ink-900);
+  background: rgba(27, 30, 36, 0.05);
+}
+
+.icon-btn:active {
+  transform: scale(0.96);
+}
+
+.text-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  font-size: 12.5px;
+  color: var(--ink-500);
+  transition:
+    color var(--dur) var(--ease-soft),
+    background-color var(--dur) var(--ease-soft);
+}
+
+.text-btn:hover {
+  color: var(--ink-900);
+  background: rgba(27, 30, 36, 0.05);
+}
+
+.text-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* ============================================================
+   Element Plus 细节对齐
+   ============================================================ */
+.el-button {
+  border-radius: var(--radius-sm);
+  font-weight: 500;
+  transition:
+    background-color var(--dur) var(--ease-soft),
+    border-color var(--dur) var(--ease-soft),
+    box-shadow var(--dur) var(--ease-soft),
+    transform var(--dur-fast) var(--ease-soft);
+}
+
+.el-button:active {
+  transform: translateY(1px);
+}
+
+.el-button--primary {
+  --el-button-bg-color: var(--ink-900);
+  --el-button-border-color: var(--ink-900);
+  --el-button-hover-bg-color: #30343d;
+  --el-button-hover-border-color: #30343d;
+  --el-button-active-bg-color: #14161b;
+  --el-button-active-border-color: #14161b;
+  box-shadow: 0 1px 2px rgba(27, 30, 36, 0.18), var(--shadow-inset);
+}
+
+.el-button--default {
+  --el-button-bg-color: var(--surface);
+  --el-button-border-color: var(--line-strong);
+  --el-button-hover-bg-color: var(--surface-soft);
+  --el-button-hover-border-color: rgba(27, 30, 36, 0.22);
+  color: var(--ink-700);
+}
+
+.el-button--danger {
+  --el-button-bg-color: var(--danger);
+  --el-button-border-color: var(--danger);
+  --el-button-hover-bg-color: #9c3f39;
+  --el-button-hover-border-color: #9c3f39;
+}
+
+.el-checkbox {
+  --el-checkbox-checked-bg-color: var(--accent);
+  --el-checkbox-checked-input-border-color: var(--accent);
+  --el-checkbox-input-border-color-hover: var(--accent);
+}
+
+.el-message {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(14px);
+  box-shadow: var(--shadow-md);
+  padding: 11px 16px;
+}
+
+.el-message__content {
+  color: var(--ink-800);
+  font-size: 13.5px;
+}
+
+.el-message-box {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 22px 24px;
+  background: var(--surface);
+}
+
+.el-message-box__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink-900);
+}
+
+.el-message-box__message {
+  color: var(--ink-500);
+  font-size: 13.5px;
+}
+
+.el-message-box__btns .el-button {
+  min-width: 76px;
+}
+
+.el-overlay {
+  background-color: rgba(20, 22, 27, 0.28);
+  backdrop-filter: blur(3px);
+}
+
+.el-link {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }

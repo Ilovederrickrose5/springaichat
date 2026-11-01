@@ -8,11 +8,21 @@
 
 ## 界面预览
 
+### 对话界面
+
 ![聊天界面](docs/screenshots/chat.png)
+
+### 登录 / 注册
 
 | 登录 | 注册 |
 |------|------|
 | ![登录界面](docs/screenshots/login.png) | ![用户注册](docs/screenshots/register.png) |
+
+### 移动端
+
+<p align="center">
+  <img src="docs/screenshots/chat-mobile.png" width="320" alt="移动端对话界面" />
+</p>
 
 ---
 
@@ -28,7 +38,7 @@
 
 ### 会话与消息
 - 会话创建、列表（按更新时间倒序）、详情、删除（级联删除消息 + 清理缓存）
-- 消息同步发送、SSE 流式发送、NDJSON 流式发送
+- 消息同步发送、SSE 流式发送（`message` / `error` 事件）、历史消息分页加载
 - 单条删除 / 批量删除 / 右键菜单 / 多选
 - 会话标题自动生成（首条用户消息截取）
 
@@ -44,7 +54,7 @@
 ### 上下文与性能
 - Cache-Aside 缓存：`chat:history:{conversationId}`，TTL 24h
 - 双重裁剪：最多 20 条消息 + 累计 4096 Token（保留 SystemMessage）
-- 首字延迟优化：用户消息与会话标题异步落库，不阻塞模型调用
+- 首字延迟优化：用户消息同步落库（毫秒级），会话标题与更新时间交给 `chatTaskExecutor` 异步更新
 - 缓存删除失败重试 2 次（间隔递增）
 
 ### RAG 知识库
@@ -111,11 +121,12 @@ springaichat/
 │   │   ├── JwtSecretProvider           # JWT 密钥校验（dev 随机 / prod 强制）
 │   │   ├── CorsConfig                  # 跨域白名单（可配置）
 │   │   ├── RedisConfig                 # RedisTemplate 序列化
+│   │   ├── AsyncConfig                 # chatTaskExecutor 线程池（标题更新等非关键任务）
 │   │   ├── OpenAiChatConfig            # ChatClient（@Primary，qwen-plus）
 │   │   └── RagConfig                   # JedisPooled + RedisVectorStore（@ConditionalOnProperty）
 │   ├── controller/
 │   │   ├── AuthController              # 注册 / 登录 / 刷新 / 登出
-│   │   └── ChatController              # 会话 CRUD、消息 CRUD、SSE、NDJSON
+│   │   └── ChatController              # 会话 CRUD、消息 CRUD、SSE
 │   ├── service/
 │   │   ├── AuthService                 # 双 Token 签发、refresh rotation、登出
 │   │   ├── TokenStoreService           # Redis：refresh 绑定 + access 黑名单
@@ -124,7 +135,7 @@ springaichat/
 │   ├── repository/                     # User / Conversation / Message
 │   ├── entity/                         # User / Conversation / Message
 │   ├── dto/                            # 8 个请求/响应 DTO
-│   ├── exception/GlobalExceptionHandler
+│   ├── exception/                      # GlobalExceptionHandler + Business/NotFound/Forbidden/Unauthorized
 │   ├── util/JwtUtil                    # 双 Token 生成 / 解析 / 类型校验
 │   └── SpringAiChatApplication.java
 ├── src/main/resources/
@@ -140,9 +151,12 @@ springaichat/
 │   │   ├── router/index.js             # 懒加载路由 + 登录守卫
 │   │   ├── utils/
 │   │   │   ├── axios.js                # JWT 注入 + 401 无感刷新队列
-│   │   │   └── auth.js                 # 公共 refreshToken()、Token 存取工具
+│   │   │   ├── auth.js                 # 公共 refreshToken()、Token 存取工具
+│   │   │   ├── sseParser.js            # 多行 data 拼接 + event 区分
+│   │   │   └── time.js                 # 相对时间格式化
 │   │   ├── composables/useStreamChat.js# SSE 流解析、打字机、暂停、取消
 │   │   ├── components/
+│   │   │   ├── BrandMark.vue           # 纯 CSS 品牌标记
 │   │   │   ├── ConversationList.vue    # 会话列表
 │   │   │   ├── MessageItem.vue         # 消息气泡 + Markdown 渲染 + 右键菜单
 │   │   │   ├── ContextMenu.vue         # 右键菜单
@@ -153,6 +167,7 @@ springaichat/
 │   ├── vite.config.js                  # manualChunks 分包
 │   ├── .env.example                    # VITE_API_BASE_URL 示例
 │   └── package.json
+├── docs/screenshots/                   # README 运行截图
 ├── docker-compose.yml                  # MySQL(3307) + Redis Stack(6379)
 ├── start-all.bat                       # Windows 一键启动脚本
 ├── AGENTS.md                           # 开发约定
@@ -313,22 +328,22 @@ user (1) ──user_id──▶ conversation (1) ──conversation_id──▶ 
 - Token 内含 `type` 声明与 `jti`；过滤器只接受 `type=access`
 - refresh 时校验 Redis 绑定值，随后**换发新 refresh 覆盖旧值**（Rotation）
 - 登出时删除 refresh 绑定，并把 access 的 `jti` 写入 `jwt:blacklist:{jti}`，TTL = 剩余有效期
-- 前端 `axios.js`：401 时用 `pendingRequests` 队列挂起并发请求，只发起一次 refresh，成功后重放
+- 前端 `utils/auth.js`：refresh **单飞**（并发 401 与 SSE 共用同一次 refresh），`axios.js` 用 `_retried` 标记避免重放死循环
 
 ### 8.2 SSE 流式链路
 
 ```
-Chat.vue → useStreamChat.sendStream()
+Chat.vue → useStreamChat.sendMessageStream()
   → POST /api/chat/messages/stream (fetch + ReadableStream)
      → ChatController.streamMessage → ChatService.streamMessage
         1. 归属校验
-        2. 异步：保存用户消息 / 更新会话标题（不阻塞首字）
-        3. 读取 Redis 历史（miss 回源 MySQL 并回写）
+        2. 读取 Redis 历史（miss 回源 MySQL 最近 N 条并回写）
+        3. 同步保存用户消息（毫秒级，保证顺序稳定），标题更新交给 chatTaskExecutor
         4. 双重裁剪（20 条 / 4096 Token）
         5. 检索 RAG → 拼 SystemMessage
-        6. ChatClient.stream() → Flux<String>，失败最多重试 2 次
-        7. doOnComplete：保存 AI 回答 + 回写 Redis
-  → 前端按事件切分，重拼多行 data、逐字符打字机、实时 Markdown
+        6. ChatClient.stream() → Flux<String>，失败最多重试 2 次；已输出内容不再重试
+        7. doOnComplete / doFinally：保存 AI 回答（含取消时已生成部分）+ 回写 Redis
+  → 前端解析 event/data（message / error），逐字符打字机、实时 Markdown
 ```
 
 **一个易错点**：Spring 会把含换行的文本编码成多行 `data:`，前端必须把同一事件内的多行用 `\n` 重新拼接，否则标题、列表等 Markdown 语法会失效。
@@ -337,8 +352,8 @@ Chat.vue → useStreamChat.sendStream()
 
 - 读：Redis 命中直接返回；未命中查 MySQL 并回写（TTL 24h）
 - 写：流式结束后更新缓存
-- 删：删除消息 / 会话时**删除**缓存并重试 2 次
-- 裁剪：`size > 20` 或估算 Token > 4096 时，从 index=1 开始删除最早消息（index=0 为 SystemMessage）
+- 删：删除消息 / 会话时在**事务提交后**删除缓存并重试 2 次
+- 裁剪：`size > 20` 或估算 Token > 4096 时，从最早消息开始删；仅保护真正的 SystemMessage，且裁剪后以 user 消息开头
 - Token 估算：中文 ≈ 2 字符/Token，英文 ≈ 4 字符/Token，每条消息 +4
 
 ### 8.4 RAG
@@ -354,9 +369,12 @@ Chat.vue → useStreamChat.sendStream()
 ### 8.5 前端工程化
 
 - 路由懒加载：`() => import('../views/Chat.vue')`
-- `manualChunks`：`vendor-vue` / `vendor-element` / `vendor-axios` / `vendor-others`
-- Chat.vue 拆分：`ConversationList`、`MessageItem`、`ContextMenu`、`InputArea` + `useStreamChat` composable
-- Markdown 渲染：marked + marked-highlight + highlight.js（`lib/common` 按需）+ DOMPurify；流式期间 50ms 节流渲染
+- `manualChunks`：`vendor-vue` / `vendor-element` / `vendor-axios` / `vendor-others`（`@vueuse` 归入 element 侧，避免循环 chunk）
+- Element Plus 组件与图标**按需引入**（`element-plus/es/components/*`），避免整包进入产物
+- Chat.vue 拆分：`ConversationList`、`MessageItem`、`ContextMenu`、`InputArea`、`BrandMark` + `useStreamChat` composable
+- 设计系统：`style.css` 集中定义色阶、圆角、间距、阴影与动效曲线，登录页与会话页统一复用；支持 `prefers-reduced-motion`
+- 响应式：≤820px 会话栏转为抽屉（带遮罩），输入区适配 `env(safe-area-inset-bottom)`
+- Markdown 渲染：marked + marked-highlight + highlight.js（`lib/common` 按需）+ DOMPurify；流式期间 80ms 节流渲染
 - 代码高亮样式：`highlight.js/styles/github.css`
 
 ---
@@ -373,10 +391,9 @@ Chat.vue → useStreamChat.sendStream()
 | `/api/chat/conversations` | POST | 创建会话 |
 | `/api/chat/conversations/{id}` | GET | 会话详情（归属校验） |
 | `/api/chat/conversations/{id}` | DELETE | 删除会话 + 消息 + 缓存 |
-| `/api/chat/conversations/{id}/messages` | GET | 消息列表 |
+| `/api/chat/conversations/{id}/messages` | GET | 消息列表（可选 `limit` / `beforeId` 分页） |
 | `/api/chat/messages` | POST | 同步发送消息 |
-| `/api/chat/messages/stream` | POST | SSE 流式（`text/event-stream`） |
-| `/api/chat/messages/stream/json` | POST | NDJSON 流式 |
+| `/api/chat/messages/stream` | POST | SSE 流式（`text/event-stream`，`event: message` / `event: error`） |
 | `/api/chat/messages/{id}` | DELETE | 删除单条消息 |
 | `/api/chat/messages/batch-delete` | POST | 批量删除消息 |
 

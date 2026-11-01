@@ -4,19 +4,35 @@
  * Spring 会把含换行的文本编码成多行 `data:`，所以同一事件内的多行必须用 `\n`
  * 重新拼接，否则标题、列表等 Markdown 语法会丢失行语义。
  *
+ * 事件名（`event:` 行）同样会解析出来：后端用 `event: message` 发送正文、
+ * `event: error` 发送错误，前端不再靠内容前缀猜测。
+ *
  * @param {string} buffer 累积的原始文本（可能包含不完整事件）
- * @returns {{chunks: string[], rest: string}} chunks 为已完整事件的数据内容，rest 为未结束的尾部
+ * @returns {{events: Array<{event: string, data: string}>, rest: string}}
+ *          events 为已完整事件，rest 为未结束的尾部
  */
 export function parseSseEvents(buffer) {
   const parts = buffer.split(/\r?\n\r?\n/)
   const rest = parts.pop() ?? ''
-  const chunks = []
+  const events = []
 
-  for (const event of parts) {
-    const dataLines = event.split(/\r?\n/).filter(line => line.startsWith('data:'))
+  for (const rawEvent of parts) {
+    let eventName = 'message'
+    const dataLines = []
+
+    for (const line of rawEvent.split(/\r?\n/)) {
+      if (!line || line.startsWith(':')) continue
+      if (line.startsWith('event:')) {
+        eventName = line.slice(6).trim() || 'message'
+      } else if (line.startsWith('data:')) {
+        // 规范允许 "data:value" 与 "data: value"，统一去掉一个前导空格
+        dataLines.push(line.slice(5).replace(/^ /, ''))
+      }
+    }
+
     if (!dataLines.length) continue
-    chunks.push(dataLines.map(line => line.slice(5)).join('\n'))
+    events.push({ event: eventName, data: dataLines.join('\n') })
   }
 
-  return { chunks, rest }
+  return { events, rest }
 }

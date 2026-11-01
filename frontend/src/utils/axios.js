@@ -15,24 +15,6 @@ const instance = axios.create({
   timeout: 30000
 })
 
-// ===== 并发 refresh 控制：同一时刻只允许一次 refresh 请求，其余等待 =====
-let isRefreshing = false
-let pendingRequests = [] // { resolve, reject, originalConfig }
-
-function runPendingRequests(error, newToken) {
-  pendingRequests.forEach(p => {
-    if (error) {
-      p.reject(error)
-    } else {
-      // 用新的 accessToken 重新执行原请求
-      const cfg = { ...p.originalConfig }
-      cfg.headers = { ...(cfg.headers || {}), Authorization: `Bearer ${newToken}` }
-      instance.request(cfg).then(p.resolve).catch(p.reject)
-    }
-  })
-  pendingRequests = []
-}
-
 function clearAllAuth() {
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(ACCESS_TOKEN_KEY)
@@ -85,8 +67,7 @@ instance.interceptors.request.use(
 // ===== 响应拦截：401 走 refresh 流程 =====
 instance.interceptors.response.use(
   response => {
-    // 兼容我们后端统一返回 { success, message, data/... } 结构
-    // 历史约定：axios 响应 data 直接 return response.data 给调用方
+    // 兼容后端统一返回 { success, message, data/... } 结构
     return response.data
   },
   error => {
@@ -98,50 +79,38 @@ instance.interceptors.response.use(
       return Promise.reject(error)
     }
 
-    // 401 —— 尝试用 refresh 换新 accessToken
-    if (resp.status === 401) {
-      // 场景 A：当前 401 这个请求本身就是 refresh 接口 → refresh 也挂了，只能去登录
-      const urlPath = (originalRequest.url || '').replace(/^http:\/\/[^/]+\/api/, '')
-      if (urlPath === '/auth/refresh' || urlPath.endsWith('/api/auth/refresh')) {
-        clearAllAuth()
-        router.push('/login')
-        return Promise.reject(error)
-      }
+    if (resp.status !== 401 || !originalRequest) {
+      return Promise.reject(error)
+    }
 
-      const refreshTokenValue = getRefreshToken()
-      if (!refreshTokenValue) {
-        // 没有 refreshToken，直接退登录
-        clearAllAuth()
-        router.push('/login')
-        return Promise.reject(error)
-      }
+    // 已经用新 Token 重放过仍然 401 → refresh 也失效了，回登录页
+    if (originalRequest._retried) {
+      clearAllAuth()
+      router.push('/login')
+      return Promise.reject(error)
+    }
 
-      if (isRefreshing) {
-        // 正在刷新中，挂到等待队列
-        return new Promise((resolve, reject) => {
-          pendingRequests.push({ resolve, reject, originalConfig: originalRequest })
-        })
-      }
+    if (!getRefreshToken()) {
+      clearAllAuth()
+      router.push('/login')
+      return Promise.reject(error)
+    }
 
-      isRefreshing = true
-      // 调用公共 refresh 函数（内部用裸 axios，不走拦截器，防死循环）
-      return refreshAccessToken().then(newToken => {
-        // 把当前这个失败的请求补上新的 Token 再发一次
-        originalRequest.headers.Authorization = `Bearer ${newToken}`
-        runPendingRequests(null, newToken)
+    originalRequest._retried = true
+    // auth.js 内部单飞：并发请求共享同一次 refresh，不会互相踢掉
+    return refreshAccessToken()
+      .then(newToken => {
+        originalRequest.headers = {
+          ...(originalRequest.headers || {}),
+          Authorization: `Bearer ${newToken}`
+        }
         return instance.request(originalRequest)
-      }).catch(refreshErr => {
-        runPendingRequests(refreshErr, null)
+      })
+      .catch(refreshErr => {
         clearAllAuth()
         router.push('/login')
         return Promise.reject(refreshErr)
-      }).finally(() => {
-        isRefreshing = false
       })
-    }
-
-    // 非 401 按原错误返回
-    return Promise.reject(error)
   }
 )
 

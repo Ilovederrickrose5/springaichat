@@ -1,84 +1,93 @@
 <template>
-  <div class="conversation-list" :class="{ collapsed: isCollapsed }">
-    <div class="list-header">
-      <div class="header-left">
-        <el-link
-          type="primary"
-          :underline="false"
-          class="collapse-btn"
-          @click="$emit('toggle-collapse')"
-        >
-          <el-icon><ArrowLeft /></el-icon>
-        </el-link>
-        <h2 v-show="!isCollapsed">对话列表</h2>
+  <aside class="conversation-list" :class="{ collapsed: isCollapsed }">
+    <header class="list-header">
+      <div class="brand">
+        <BrandMark size="sm" />
+        <div class="brand-text">
+          <strong>企智通</strong>
+          <span>Knowledge assistant</span>
+        </div>
       </div>
-      <el-button type="primary" size="small" @click="$emit('create')">
+      <button
+        type="button"
+        class="icon-btn collapse-btn"
+        title="收起会话列表"
+        aria-label="收起会话列表"
+        @click="$emit('toggle-collapse')"
+      >
+        <el-icon><ArrowLeft /></el-icon>
+      </button>
+    </header>
+
+    <div class="new-chat-row">
+      <button type="button" class="new-chat-btn" @click="$emit('create')">
         <el-icon><Plus /></el-icon>
-        <span v-show="!isCollapsed">新建会话</span>
-      </el-button>
+        <span>新建会话</span>
+      </button>
     </div>
 
-    <div class="conversations">
+    <div class="section-head">
+      <span>最近对话</span>
+      <span class="section-count">{{ conversations.length }}</span>
+    </div>
+
+    <nav class="conversations" aria-label="会话列表">
       <div
         v-for="conv in conversations"
         :key="conv.id"
         class="conversation-item"
         :class="{ active: selectedConversation === conv.id }"
+        role="button"
+        tabindex="0"
         @click="$emit('select', conv.id)"
+        @keydown.enter="$emit('select', conv.id)"
       >
-        <div class="conv-info">
-          <el-icon :size="20" color="#667eea" class="conv-icon"><ChatLineRound /></el-icon>
-          <div class="conv-content">
-            <div class="conv-title">{{ conv.title }}</div>
-            <div class="conv-time">{{ formatTime(conv.updateTime) }}</div>
-          </div>
+        <div class="conv-body">
+          <div class="conv-title">{{ conv.title || '新对话' }}</div>
+          <div class="conv-time">{{ formatTime(conv.updateTime) }}</div>
         </div>
-        <el-link
-          type="danger"
-          :underline="false"
-          class="delete-btn"
+        <button
+          type="button"
+          class="conv-delete"
+          title="删除会话"
+          aria-label="删除会话"
           @click.stop="$emit('delete', conv.id)"
         >
           <el-icon><Delete /></el-icon>
-        </el-link>
+        </button>
       </div>
 
       <div v-if="conversations.length === 0" class="empty-state">
-        <el-icon :size="48" color="#ccc">
-          <ChatLineRound />
-        </el-icon>
-        <p v-show="!isCollapsed">暂无对话</p>
-        <el-button v-show="!isCollapsed" type="primary" size="small" @click="$emit('create')">
-          开始新对话
-        </el-button>
+        <span class="empty-icon">
+          <el-icon><ChatLineRound /></el-icon>
+        </span>
+        <p class="empty-title">还没有对话</p>
+        <p class="empty-text">从一个问题开始，知识会慢慢聚起来</p>
+        <button type="button" class="text-btn empty-action" @click="$emit('create')">
+          新建会话
+        </button>
       </div>
-    </div>
+    </nav>
 
-    <div class="user-info" v-show="!isCollapsed">
-      <div class="user-avatar">
-        <el-icon :size="32" color="#667eea"><User /></el-icon>
-      </div>
+    <footer class="user-info">
+      <span class="user-avatar">{{ initial }}</span>
       <div class="user-details">
-        <div class="user-name">@{{ currentUser }}</div>
+        <div class="user-name">{{ currentUser }}</div>
         <div class="user-status">
-          <span class="status-dot online"></span>
-          <span>在线</span>
+          <span class="status-dot"></span>
+          已登录
         </div>
       </div>
-      <el-link
-        type="primary"
-        :underline="false"
-        class="logout-btn"
-        @click="$emit('logout')"
-      >
-        <el-icon><WindPower /></el-icon>
-      </el-link>
-    </div>
-  </div>
+    </footer>
+  </aside>
 </template>
 
 <script setup>
-defineProps({
+import { computed } from 'vue'
+import { formatTime } from '@/utils/time'
+import BrandMark from '@/components/BrandMark.vue'
+
+const props = defineProps({
   conversations: { type: Array, default: () => [] },
   selectedConversation: { type: [Number, String, null], default: null },
   isCollapsed: { type: Boolean, default: false },
@@ -86,184 +95,368 @@ defineProps({
 })
 defineEmits(['select', 'create', 'delete', 'toggle-collapse', 'logout'])
 
-const formatTime = (timeStr) => {
-  if (!timeStr) return ''
-  const date = new Date(timeStr)
-  const now = new Date()
-  const diff = now.getTime() - date.getTime()
-  const minutes = Math.floor(diff / 60000)
-  if (minutes < 1) return '刚刚'
-  if (minutes < 60) return `${minutes}分钟前`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}小时前`
-  const days = Math.floor(hours / 24)
-  if (days < 7) return `${days}天前`
-  return date.toLocaleDateString()
-}
+const initial = computed(() => {
+  const name = (props.currentUser || '用').trim()
+  return name.charAt(0).toUpperCase()
+})
 </script>
 
 <style scoped>
 .conversation-list {
-  width: 320px;
-  background: white;
-  border-right: 1px solid #e8e8e8;
+  width: 292px;
+  flex-shrink: 0;
+  margin-right: 14px;
   display: flex;
   flex-direction: column;
-  transition: width 0.3s ease, padding 0.3s ease, border 0.3s ease;
-  flex-shrink: 0;
   overflow: hidden;
+  border: 1px solid rgba(27, 30, 36, 0.06);
+  border-radius: var(--radius-xl);
+  background: linear-gradient(180deg, #ffffff 0%, #fbfaf7 100%);
+  box-shadow: var(--shadow-sm);
+  transition:
+    width 320ms var(--ease-out),
+    margin 320ms var(--ease-out),
+    opacity 200ms var(--ease-soft);
 }
+
 .conversation-list.collapsed {
   width: 0;
-  padding: 0;
-  border-right: none;
+  margin-right: 0;
+  opacity: 0;
+  border-width: 0;
 }
+
+/* ---------- 顶部 ---------- */
 .list-header {
-  padding: 16px;
-  border-bottom: 1px solid #e8e8e8;
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  align-items: center;
+  gap: 10px;
+  padding: 18px 12px 14px 18px;
 }
-.header-left {
+
+.brand {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+  min-width: 0;
 }
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+  min-width: 0;
+}
+
+.brand-text strong {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--ink-900);
+  white-space: nowrap;
+}
+
+.brand-text span {
+  margin-top: 2px;
+  font-size: 9px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-400);
+  white-space: nowrap;
+}
+
 .collapse-btn {
-  width: 32px;
-  height: 32px;
+  flex-shrink: 0;
+}
+
+.new-chat-row {
+  padding: 0 14px 16px;
+}
+
+.new-chat-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 8px;
-  transition: background-color 0.2s;
+  gap: 7px;
+  width: 100%;
+  height: 40px;
+  border-radius: 11px;
+  background: linear-gradient(180deg, #2b2f38, #1c1f26);
+  color: #f7f6f3;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  box-shadow:
+    0 6px 16px -12px rgba(27, 30, 36, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  transition:
+    transform var(--dur) var(--ease-out),
+    box-shadow var(--dur) var(--ease-out);
 }
-.collapse-btn:hover {
-  background-color: #f5f5f5;
+
+.new-chat-btn:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 10px 20px -12px rgba(27, 30, 36, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
 }
-.conversation-list.collapsed .collapse-btn {
-  transform: rotate(180deg);
+
+.new-chat-btn:active {
+  transform: translateY(0);
 }
-.list-header h2 {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 0;
+
+.new-chat-btn :deep(.el-icon) {
+  font-size: 15px;
 }
+
+/* ---------- 会话列表 ---------- */
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px 8px;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--ink-400);
+}
+
+.section-count {
+  min-width: 20px;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: rgba(27, 30, 36, 0.05);
+  font-size: 10px;
+  letter-spacing: 0;
+  text-align: center;
+  color: var(--ink-500);
+}
+
 .conversations {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  padding: 0 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
+
 .conversation-item {
-  padding: 12px 16px;
-  border-bottom: 1px solid #f0f0f0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 8px 10px 13px;
+  border-radius: 12px;
   cursor: pointer;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  transition: background-color 0.2s;
+  transition:
+    background-color var(--dur) var(--ease-soft),
+    transform var(--dur) var(--ease-out);
 }
+
+.conversation-item::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 12px;
+  bottom: 12px;
+  width: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  opacity: 0;
+  transform: scaleY(0.4);
+  transition:
+    opacity var(--dur) var(--ease-soft),
+    transform var(--dur) var(--ease-out);
+}
+
 .conversation-item:hover {
-  background-color: #fafafa;
+  background: rgba(27, 30, 36, 0.035);
 }
+
 .conversation-item.active {
-  background-color: #f0f5ff;
+  background: var(--accent-soft);
 }
-.conv-info {
+
+.conversation-item.active::before {
+  opacity: 1;
+  transform: scaleY(1);
+}
+
+.conv-body {
   flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 12px;
   min-width: 0;
 }
-.conv-icon { flex-shrink: 0; }
-.conv-content { flex: 1; min-width: 0; }
+
 .conv-title {
-  font-size: 14px;
-  font-weight: 500;
-  color: #333;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-700);
+  transition: color var(--dur) var(--ease-soft);
 }
+
+.conversation-item:hover .conv-title {
+  color: var(--ink-900);
+}
+
+.conversation-item.active .conv-title {
+  color: var(--ink-900);
+  font-weight: 600;
+}
+
 .conv-time {
-  font-size: 12px;
-  color: #999;
   margin-top: 2px;
+  font-size: 11px;
+  color: var(--ink-400);
+  transition: opacity var(--dur) var(--ease-soft);
 }
-.delete-btn {
+
+.conv-delete {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  color: var(--ink-400);
   opacity: 0;
-  color: #999;
-  transition: opacity 0.2s;
+  transform: translateX(2px);
+  transition:
+    opacity var(--dur) var(--ease-soft),
+    transform var(--dur) var(--ease-out),
+    background-color var(--dur) var(--ease-soft),
+    color var(--dur) var(--ease-soft);
 }
-.conversation-item:hover .delete-btn {
+
+.conversation-item:hover .conv-delete,
+.conv-delete:focus-visible {
   opacity: 1;
+  transform: translateX(0);
 }
-.delete-btn:hover {
-  color: #f56c6c;
+
+.conv-delete:hover {
+  color: var(--danger);
+  background: rgba(176, 74, 67, 0.1);
 }
+
+/* ---------- 空状态 ---------- */
 .empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
+  padding: 44px 20px 30px;
+  text-align: center;
+}
+
+.empty-icon {
+  display: flex;
+  align-items: center;
   justify-content: center;
-  padding: 60px 20px;
-  color: #999;
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+  background: var(--surface-tint);
+  color: var(--ink-300);
+  font-size: 20px;
+  box-shadow: var(--shadow-inset);
 }
-.empty-state p {
-  margin: 16px 0;
+
+.empty-title {
+  margin-top: 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-700);
 }
+
+.empty-text {
+  margin-top: 4px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ink-400);
+}
+
+.empty-action {
+  margin-top: 14px;
+  color: var(--accent);
+}
+
+/* ---------- 用户区 ---------- */
 .user-info {
-  padding: 16px;
-  border-top: 1px solid #e8e8e8;
-  background: linear-gradient(135deg, #f8f9ff 0%, #f0f5ff 100%);
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
+  padding: 14px 16px;
+  border-top: 1px solid var(--line);
 }
+
 .user-avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  background: var(--warm-soft);
+  color: #7a5836;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px rgba(122, 88, 54, 0.08);
 }
+
 .user-details {
   flex: 1;
   min-width: 0;
 }
+
 .user-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: #333;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-800);
 }
+
 .user-status {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
-  color: #67c23a;
-  margin-top: 2px;
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--ink-400);
 }
+
 .status-dot {
-  width: 8px;
-  height: 8px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
-  background-color: #999;
+  background: #7d9a7b;
+  box-shadow: 0 0 0 3px rgba(125, 154, 123, 0.12);
 }
-.status-dot.online {
-  background-color: #67c23a;
-}
-.logout-btn {
-  color: #999;
-  transition: color 0.2s;
-}
-.logout-btn:hover {
-  color: #f56c6c;
+
+@media (max-width: 820px) {
+  .conversation-list {
+    position: absolute;
+    top: 10px;
+    bottom: 10px;
+    left: 10px;
+    z-index: 20;
+    width: 272px;
+    margin-right: 0;
+    box-shadow: var(--shadow-lg);
+  }
+
+  .conversation-list.collapsed {
+    transform: translateX(-16px);
+    pointer-events: none;
+  }
 }
 </style>

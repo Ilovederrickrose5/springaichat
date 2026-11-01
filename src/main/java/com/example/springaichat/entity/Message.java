@@ -8,7 +8,9 @@ import java.time.LocalDateTime;
  * 消息实体类
  */
 @Entity
-@Table(name = "message")
+@Table(name = "message", indexes = {
+        @Index(name = "idx_message_conversation", columnList = "conversation_id")
+})
 public class Message {
 
     @Id

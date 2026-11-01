@@ -8,7 +8,10 @@ import java.time.LocalDateTime;
  * 会话实体类
  */
 @Entity
-@Table(name = "conversation")
+@Table(name = "conversation", indexes = {
+        @Index(name = "idx_conversation_user", columnList = "user_id"),
+        @Index(name = "idx_conversation_user_update", columnList = "user_id, update_time")
+})
 public class Conversation {
 
     @Id

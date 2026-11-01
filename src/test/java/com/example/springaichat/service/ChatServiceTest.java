@@ -33,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
@@ -75,7 +76,8 @@ class ChatServiceTest {
     @BeforeEach
     void setUp() {
         lenient().when(chatClientBuilder.build()).thenReturn(chatClient);
-        chatService = new ChatService(chatClientBuilder, conversationRepository, messageRepository, redisTemplate);
+        chatService = new ChatService(chatClientBuilder, conversationRepository, messageRepository, redisTemplate,
+                Runnable::run);
         // @Value 字段集中注入，后续字段改名只需改这一处
         ReflectionTestUtils.setField(chatService, "maxHistorySize", 20);
         ReflectionTestUtils.setField(chatService, "maxMessageLength", 4000);
@@ -114,7 +116,7 @@ class ChatServiceTest {
     @Test
     void streamMessage_sendsCurrentUserMessageOnlyOnce() {
         stubConversation(5L, 1L);
-        when(messageRepository.findByConversationIdOrderByCreateTimeAsc(5L)).thenReturn(List.of());
+        when(messageRepository.findByConversationIdOrderByIdDesc(eq(5L), any())).thenReturn(List.of());
         stubStreaming(Flux.just("回答"));
 
         chatService.streamMessage(1L, new MessageRequest(5L, "你好")).collectList().block();
@@ -143,7 +145,7 @@ class ChatServiceTest {
         chatService.streamMessage(1L, new MessageRequest(5L, "新问题")).collectList().block();
 
         // 缓存命中时不应回源 MySQL
-        verify(messageRepository, never()).findByConversationIdOrderByCreateTimeAsc(any());
+        verify(messageRepository, never()).findByConversationIdOrderByIdDesc(any(), any());
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<org.springframework.ai.chat.messages.Message>> captor =
@@ -157,7 +159,7 @@ class ChatServiceTest {
     @Test
     void streamMessage_retryDoesNotDuplicateUserMessage() {
         stubConversation(5L, 1L);
-        when(messageRepository.findByConversationIdOrderByCreateTimeAsc(5L)).thenReturn(List.of());
+        when(messageRepository.findByConversationIdOrderByIdDesc(eq(5L), any())).thenReturn(List.of());
 
         AtomicInteger attempts = new AtomicInteger();
         Flux<String> flaky = Flux.defer(() -> attempts.getAndIncrement() == 0
@@ -214,7 +216,7 @@ class ChatServiceTest {
     @Test
     void streamMessage_doesNotRetryAfterPartialOutput() {
         stubConversation(5L, 1L);
-        when(messageRepository.findByConversationIdOrderByCreateTimeAsc(5L)).thenReturn(List.of());
+        when(messageRepository.findByConversationIdOrderByIdDesc(eq(5L), any())).thenReturn(List.of());
         stubStreaming(Flux.just("A").concatWith(Flux.error(new RuntimeException("Connection reset"))));
 
         List<String> received = new ArrayList<>();
@@ -238,7 +240,7 @@ class ChatServiceTest {
     @Test
     void streamMessage_persistsAiMessageWhenRedisWriteFails() {
         stubConversation(5L, 1L);
-        when(messageRepository.findByConversationIdOrderByCreateTimeAsc(5L)).thenReturn(List.of());
+        when(messageRepository.findByConversationIdOrderByIdDesc(eq(5L), any())).thenReturn(List.of());
         stubStreaming(Flux.just("回答"));
 
         @SuppressWarnings("unchecked")

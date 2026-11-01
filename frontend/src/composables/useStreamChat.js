@@ -6,6 +6,8 @@ import { parseSseEvents } from '../utils/sseParser.js'
  * SSE 流式聊天 composable。
  * 将流式请求、打字机、暂停/继续、AbortController 等逻辑从 Chat.vue 抽离。
  *
+ * 消息更新一律按本地 id 查找，避免流式过程中列表被删除/切换导致下标错位。
+ *
  * @param {Object} deps
  * @param {Ref}   deps.messages            消息列表 ref
  * @param {Ref}   deps.selectedConversation 当前会话 id ref
@@ -13,9 +15,8 @@ import { parseSseEvents } from '../utils/sseParser.js'
  * @param {Function} deps.scrollToBottom   滚动到底部回调
  * @param {Function} deps.updateConversationInList 更新会话列表回调
  * @param {Function} deps.getAccessToken    读取 accessToken
- * @param {Function} deps.refreshToken      公共 refresh 函数
+ * @param {Function} deps.refreshToken      公共 refresh 函数（内部单飞）
  * @param {Function} deps.clearAllAuth      清理本地认证态
- * @param {Object}   deps.axios             axios 实例
  * @param {Object}   deps.router            vue-router 实例
  * @param {Object}   deps.ElMessage         Element Plus 消息组件
  */
@@ -24,7 +25,7 @@ export function useStreamChat(deps) {
     messages, selectedConversation, isAtBottom,
     scrollToBottom, updateConversationInList,
     getAccessToken, refreshToken, clearAllAuth,
-    axios, router, ElMessage
+    router, ElMessage
   } = deps
 
   const streamingContent = ref('')
@@ -32,15 +33,51 @@ export function useStreamChat(deps) {
   const isPaused = ref(false)
   const currentStreamController = ref(null)
   const typingSpeed = ref(10)
+  const activeAiId = ref(null)
+
+  let streamSequence = 0
+  let localIdSeq = 0
+  let scrollFrame = null
 
   const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
+  const nextLocalId = () => `local-${Date.now()}-${++localIdSeq}`
 
-  // 主动中止当前流式请求（幂等）
+  // 流式期间每帧最多滚动一次，避免逐字符改 scrollTop
+  const requestScroll = () => {
+    if (scrollFrame) return
+    scrollFrame = requestAnimationFrame(() => {
+      scrollFrame = null
+      scrollToBottom()
+    })
+  }
+
+  const findIndexById = (id) => messages.value.findIndex(m => m.id === id)
+
+  // 结束当前 AI 占位消息：无内容则移除，有内容则标记完成
+  const settleActiveMessage = () => {
+    const id = activeAiId.value
+    activeAiId.value = null
+    if (id === null) return
+
+    const idx = findIndexById(id)
+    if (idx === -1) return
+    if (!messages.value[idx].content) {
+      messages.value.splice(idx, 1)
+    } else {
+      messages.value[idx] = { ...messages.value[idx], status: 'done' }
+    }
+  }
+
+  // 主动中止当前流式请求（幂等）：保留已生成的部分内容
   const abortCurrentStream = () => {
+    streamSequence++
     if (currentStreamController.value) {
       currentStreamController.value.abort()
       currentStreamController.value = null
     }
+    settleActiveMessage()
+    isStreaming.value = false
+    isPaused.value = false
   }
 
   const togglePause = () => {
@@ -55,161 +92,169 @@ export function useStreamChat(deps) {
     }
   }
 
+  async function openStream(conversationId, content, controller, allowRetry) {
+    const response = await fetch(`${BASE_URL}/chat/messages/stream`, {
+      method: 'POST',
+      headers: {
+        'Accept': 'text/event-stream',
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${getAccessToken()}`
+      },
+      signal: controller.signal,
+      body: JSON.stringify({ conversationId, content })
+    })
+
+    if (response.status === 401 && allowRetry) {
+      try {
+        await refreshToken()
+      } catch (e) {
+        clearAllAuth()
+        router.push('/login')
+        ElMessage.warning('登录已过期，请重新登录')
+        return null
+      }
+      return openStream(conversationId, content, controller, false)
+    }
+
+    return response
+  }
+
   const sendMessageStream = async (content) => {
-    if (!content || isStreaming.value) return
+    const text = (content || '').trim()
+    if (!text || isStreaming.value) return
 
+    const sequence = ++streamSequence
+    const conversationId = selectedConversation.value
+    const controller = new AbortController()
+    currentStreamController.value = controller
     isStreaming.value = true
-
-    // 添加用户消息
-    const userMsg = {
-      id: Date.now(),
-      conversationId: selectedConversation.value,
-      role: 'user',
-      content: content,
-      createTime: new Date().toISOString()
-    }
-    messages.value.push(userMsg)
-
-    // AI 占位消息
-    const aiMsgPlaceholder = {
-      id: Date.now() + 1,
-      conversationId: selectedConversation.value,
-      role: 'assistant',
-      content: '',
-      createTime: new Date().toISOString(),
-      status: 'thinking',
-      isPaused: false
-    }
-    messages.value.push(aiMsgPlaceholder)
-    const aiMsgIndex = messages.value.length - 1
+    isPaused.value = false
     streamingContent.value = ''
 
-    scrollToBottom()
-
-    const updateAiMessage = (text, status) => {
-      messages.value[aiMsgIndex] = {
-        ...messages.value[aiMsgIndex],
+    const aiId = nextLocalId()
+    activeAiId.value = aiId
+    messages.value.push(
+      {
+        id: nextLocalId(),
+        conversationId,
+        role: 'user',
         content: text,
-        status: status || messages.value[aiMsgIndex].status
+        createTime: new Date().toISOString()
+      },
+      {
+        id: aiId,
+        conversationId,
+        role: 'assistant',
+        content: '',
+        createTime: new Date().toISOString(),
+        status: 'thinking',
+        isPaused: false
       }
+    )
+
+    const isCurrent = () => sequence === streamSequence && !controller.signal.aborted
+
+    const updateAi = (patch) => {
+      const idx = findIndexById(aiId)
+      if (idx === -1) return
+      messages.value[idx] = { ...messages.value[idx], ...patch }
     }
 
-    try {
-      const token = getAccessToken()
-      const controller = new AbortController()
-      currentStreamController.value = controller
+    requestScroll()
 
-      const response = await fetch(`${BASE_URL}/chat/messages/stream`, {
-        method: 'POST',
-        headers: {
-          'Accept': 'text/event-stream',
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        signal: controller.signal,
-        body: JSON.stringify({
-          conversationId: selectedConversation.value,
-          content: content
-        })
-      })
+    try {
+      const response = await openStream(conversationId, text, controller, true)
+      if (!response || !isCurrent()) return
 
       if (!response.ok) {
         const errorText = await response.text()
-        if (response.status === 401) {
-          try {
-            await refreshToken()
-            messages.value.splice(aiMsgIndex, 1)
-            ElMessage.warning('登录状态已刷新，请重新发送消息')
-            return
-          } catch (se) {
-            console.warn('SSE inline refresh failed', se)
-          }
-          clearAllAuth()
-          messages.value.splice(aiMsgIndex, 1)
-          router.push('/login')
-          ElMessage.warning('登录已过期，请重新登录')
-          return
+        let detail = ''
+        try {
+          const body = JSON.parse(errorText)
+          detail = body.message || (body.errors && Object.values(body.errors)[0]) || ''
+        } catch (e) {
+          detail = errorText
         }
-        throw new Error(`请求失败: ${response.status} ${errorText}`)
+        const failure = new Error(detail || `请求失败: ${response.status}`)
+        failure.userMessage = detail
+        throw failure
       }
 
       const reader = response.body?.getReader()
+      if (!reader) throw new Error('浏览器未返回可读流')
+
       const decoder = new TextDecoder()
       let pendingBuffer = ''
+      let stopped = false
 
-      if (!reader) throw new Error('浏览器未返回可读流')
+      const consume = async (events) => {
+        for (const { event, data } of events) {
+          if (event === 'error') {
+            ElMessage.error(`请求失败: ${data}`)
+            stopped = true
+            return false
+          }
+
+          for (const char of data) {
+            if (!isCurrent()) return false
+
+            while (isPaused.value) {
+              updateAi({ status: 'paused' })
+              await sleep(50)
+              if (!isCurrent()) return false
+            }
+
+            streamingContent.value += char
+            updateAi({ content: streamingContent.value, status: 'streaming' })
+            if (isAtBottom.value) requestScroll()
+            await sleep(typingSpeed.value)
+          }
+        }
+        return true
+      }
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
 
         pendingBuffer += decoder.decode(value, { stream: true })
-        const { chunks, rest } = parseSseEvents(pendingBuffer)
+        const { events, rest } = parseSseEvents(pendingBuffer)
         pendingBuffer = rest
 
-        for (const parsedContent of chunks) {
-          if (parsedContent.startsWith('{"error":')) {
-            try {
-              const errorData = JSON.parse(parsedContent)
-              ElMessage.error(`请求失败: ${errorData.error}`)
-              messages.value.splice(aiMsgIndex, 1)
-              return
-            } catch (e) { /* 非有效 JSON 错误，继续 */ }
-          }
-
-          for (const char of parsedContent) {
-            if (controller.signal.aborted) break
-            while (isPaused.value) {
-              messages.value[aiMsgIndex] = {
-                ...messages.value[aiMsgIndex],
-                status: 'paused'
-              }
-              await sleep(50)
-            }
-            if (streamingContent.value.length === 0) {
-              streamingContent.value += char
-              updateAiMessage(streamingContent.value, 'streaming')
-            } else {
-              streamingContent.value += char
-              updateAiMessage(streamingContent.value)
-            }
-            if (isAtBottom.value) scrollToBottom()
-            await sleep(typingSpeed.value)
-          }
+        if (!(await consume(events))) {
+          try { await reader.cancel() } catch (e) { /* 已关闭 */ }
+          break
         }
       }
 
-      // 缓冲区剩余数据
-      if (pendingBuffer.trim()) {
-        const tailLines = pendingBuffer.split(/\r?\n/).filter(line => line.startsWith('data:'))
-        const tail = tailLines.map(line => line.slice(5)).join('\n')
-        for (const char of tail) {
-          if (controller.signal.aborted) break
-          streamingContent.value += char
-          updateAiMessage(streamingContent.value)
-          if (isAtBottom.value) scrollToBottom()
-          await sleep(typingSpeed.value)
-        }
+      // 服务端未以空行结束的尾事件兜底
+      if (!stopped && pendingBuffer.trim()) {
+        const { events } = parseSseEvents(pendingBuffer + '\n\n')
+        await consume(events)
       }
 
-      updateConversationInList()
+      if (isCurrent()) updateConversationInList()
     } catch (error) {
       if (error.name === 'AbortError') {
         console.info('流式请求已被主动取消')
-        messages.value.splice(aiMsgIndex, 1)
         return
       }
       console.error('流式发送失败:', error)
-      ElMessage.error('发送失败，请检查网络连接')
-      messages.value.splice(aiMsgIndex, 1)
+      // 已有部分内容时保留，不再整条移除
+      const idx = findIndexById(aiId)
+      const hasContent = idx !== -1 && Boolean(messages.value[idx].content)
+      ElMessage.error(error.userMessage || (hasContent
+        ? '回答未完整返回，已保留已生成内容'
+        : '发送失败，请检查网络连接'))
     } finally {
-      isStreaming.value = false
-      isPaused.value = false
-      currentStreamController.value = null
-      if (messages.value[aiMsgIndex]) {
-        messages.value[aiMsgIndex] = {
-          ...messages.value[aiMsgIndex],
-          status: 'done'
+      if (sequence === streamSequence) {
+        isStreaming.value = false
+        isPaused.value = false
+        currentStreamController.value = null
+        settleActiveMessage()
+        if (scrollFrame) {
+          cancelAnimationFrame(scrollFrame)
+          scrollFrame = null
         }
       }
     }

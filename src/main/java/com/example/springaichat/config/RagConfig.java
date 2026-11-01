@@ -11,6 +11,9 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import org.springframework.util.StringUtils;
+import redis.clients.jedis.DefaultJedisClientConfig;
+import redis.clients.jedis.HostAndPort;
 import redis.clients.jedis.JedisPooled;
 
 @Configuration
@@ -30,11 +33,23 @@ public class RagConfig {
         @Value("${spring.data.redis.port:6379}")
         private int redisPort;
 
+        @Value("${spring.data.redis.password:}")
+        private String redisPassword;
+
+        @Value("${spring.data.redis.database:0}")
+        private int redisDatabase;
+
         @Bean
         @ConditionalOnProperty(name = "rag.enabled", havingValue = "true")
         public JedisPooled jedisPooled() {
-                logger.info("Creating JedisPooled connection to {}:{}", redisHost, redisPort);
-                return new JedisPooled(redisHost, redisPort);
+                // 与 spring.data.redis.* 保持一致：密码 / database 之前没有透传，Redis 加密码后向量库会连不上
+                DefaultJedisClientConfig clientConfig = DefaultJedisClientConfig.builder()
+                                .password(StringUtils.hasText(redisPassword) ? redisPassword : null)
+                                .database(redisDatabase)
+                                .build();
+                logger.info("Creating JedisPooled connection to {}:{}, database={}",
+                                redisHost, redisPort, redisDatabase);
+                return new JedisPooled(new HostAndPort(redisHost, redisPort), clientConfig);
         }
 
         @Bean

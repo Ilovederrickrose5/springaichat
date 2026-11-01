@@ -4,10 +4,13 @@ import com.example.springaichat.dto.LoginRequest;
 import com.example.springaichat.dto.LoginResponse;
 import com.example.springaichat.dto.RegisterRequest;
 import com.example.springaichat.entity.User;
+import com.example.springaichat.exception.BusinessException;
+import com.example.springaichat.exception.UnauthorizedException;
 import com.example.springaichat.repository.UserRepository;
 import com.example.springaichat.util.JwtUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -40,15 +43,22 @@ public class AuthService {
      */
     @Transactional
     public User register(RegisterRequest request) {
-        if (userRepository.existsByUsername(request.getUsername())) {
-            throw new RuntimeException("用户名已存在");
+        String username = request.getUsername().trim();
+        if (userRepository.existsByUsername(username)) {
+            throw new BusinessException("用户名已存在");
         }
 
         User user = new User();
-        user.setUsername(request.getUsername());
+        user.setUsername(username);
         user.setPassword(passwordEncoder.encode(request.getPassword()));
 
-        return userRepository.save(user);
+        try {
+            // saveAndFlush 让唯一约束冲突在方法内暴露，而不是事务提交时才抛出
+            return userRepository.saveAndFlush(user);
+        } catch (DataIntegrityViolationException e) {
+            // existsByUsername 与插入之间仍可能被并发插入抢占
+            throw new BusinessException("用户名已存在");
+        }
     }
 
     /**
@@ -56,11 +66,11 @@ public class AuthService {
      * 同一用户多次登录，refresh Token 以后登录的为准（前登录被踢）
      */
     public LoginResponse login(LoginRequest request) {
-        User user = userRepository.findByUsername(request.getUsername())
-                .orElseThrow(() -> new RuntimeException("用户名或密码错误"));
+        User user = userRepository.findByUsername(request.getUsername().trim())
+                .orElseThrow(() -> new BusinessException("用户名或密码错误"));
 
         if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
-            throw new RuntimeException("用户名或密码错误");
+            throw new BusinessException("用户名或密码错误");
         }
 
         String accessToken = jwtUtil.generateAccessToken(user.getUsername());
@@ -80,25 +90,25 @@ public class AuthService {
      */
     public LoginResponse refresh(String refreshToken) {
         if (refreshToken == null || refreshToken.isBlank()) {
-            throw new RuntimeException("refresh Token 不能为空");
+            throw new UnauthorizedException("refresh Token 不能为空");
         }
         if (!jwtUtil.isValidWithoutUsername(refreshToken, JwtUtil.TYPE_REFRESH)) {
-            throw new RuntimeException("refresh Token 无效或已过期");
+            throw new UnauthorizedException("refresh Token 无效或已过期");
         }
         String username;
         try {
             username = jwtUtil.extractUsername(refreshToken);
         } catch (Exception e) {
-            throw new RuntimeException("refresh Token 解析失败");
+            throw new UnauthorizedException("refresh Token 解析失败");
         }
 
         if (!tokenStoreService.isValidRefreshToken(username, refreshToken)) {
             logger.warn("Refresh token mismatch or expired for user={}", username);
-            throw new RuntimeException("refresh Token 无效或已在其他设备登录");
+            throw new UnauthorizedException("refresh Token 无效或已在其他设备登录");
         }
 
         User user = userRepository.findByUsername(username)
-                .orElseThrow(() -> new RuntimeException("用户不存在"));
+                .orElseThrow(() -> new UnauthorizedException("用户不存在"));
 
         String newAccessToken = jwtUtil.generateAccessToken(username);
         String newRefreshToken = jwtUtil.generateRefreshToken(username);

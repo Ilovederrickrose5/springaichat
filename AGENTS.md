@@ -25,13 +25,14 @@
 ### 1.2 项目核心业务目标（已实现）
 1. 用户注册 / 登录 / 刷新 / 登出（BCrypt + JWT 双 Token + Redis refresh 绑定 + access 黑名单）
 2. 会话管理（创建、列表、详情、删除；按 userId 隔离）
-3. 消息同步发送 + SSE / NDJSON 流式输出
+3. 消息同步发送 + SSE 流式输出（`event: message` 正文 / `event: error` 错误）
 4. 打字机效果 + AI 气泡内「暂停/继续」控制
-5. 消息管理（单条删除、批量删除、归属校验、Redis 缓存清理重试）
+5. 消息管理（单条删除、批量删除、归属校验、事务提交后清理 Redis 缓存并重试）
 6. 聊天上下文记忆：Redis Cache-Aside 缓存 + MySQL 持久化 + 双重限制（消息条数 20 / Token 4096）
 7. RAG 检索增强：启动自动扫描 knowledge/ Markdown → Token 分块(800/200) → text-embedding-v2 向量化 → Redis Vector Store → 检索(topK=3, sim=0.30, 应用层 tenant 过滤) → 拼进 SystemMessage
-8. 首字响应优化：用户消息 / 会话标题更新异步落库（CompletableFuture.runAsync）
-9. 流式自动重试：Connection reset 等错误最多重试 2 次
+8. 首字响应优化：用户消息同步落库（毫秒级），标题/更新时间通过 `chatTaskExecutor` 异步更新
+9. 流式自动重试：Connection reset 等错误最多重试 2 次；已输出内容后不再重试
+10. 消息分页：`GET /conversations/{id}/messages?limit=&beforeId=` 向上翻历史
 
 > ⚠️ 未实现（文档中若出现请忽略 / 删除）：用户个人资料扩展字段 / UserController 个人中心 API / ProfileDialog 组件
 
@@ -100,25 +101,26 @@ user (1) ──(user_id)── (*) conversation (1) ──(conversation_id)─�
 
 ```
 src/main/java/com/example/springaichat/
-├── config/           # 7 个配置类
+├── config/           # 8 个配置类
 │   ├── SecurityConfig
-│   ├── JwtAuthenticationFilter     # 额外：type 必须是 access + jti 黑名单校验
+│   ├── JwtAuthenticationFilter     # 额外：type 必须是 access + jti 黑名单校验 + Caffeine 用户缓存
 │   ├── JwtSecretProvider           # JWT 密钥校验：dev 随机生成 / prod 缺失即失败
 │   ├── CorsConfig                  # 跨域白名单，cors.allowed-origins 可配置
 │   ├── RedisConfig
+│   ├── AsyncConfig        # chatTaskExecutor 专用线程池（标题更新 / 非关键异步任务）
 │   ├── OpenAiChatConfig   # ChatClient @Primary Bean (qwen-plus)，仅挂 SimpleLoggerAdvisor；RAG 检索由 ChatService 手动执行
 │   └── RagConfig          # VectorStore Bean (@ConditionalOnProperty rag.enabled)；不再注册 QuestionAnswerAdvisor（避免无租户过滤的自动检索）
-├── controller/       # AuthController（register/login/refresh/logout）、ChatController（含 SSE + NDJSON）
-├── dto/              # 8 个 DTO
+├── controller/       # AuthController（register/login/refresh/logout）、ChatController（SSE，message/error 事件）
+├── dto/              # 8 个 DTO（均带 Jakarta Validation 注解）
 │   ├── LoginRequest / LoginResponse  # LoginResponse: token/accessToken/refreshToken/expiresIn 兼容
 │   ├── RefreshTokenRequest           # POST /api/auth/refresh body
 │   ├── RegisterRequest
 │   ├── MessageRequest / MessageResponse
 │   ├── ConversationResponse
 │   └── BatchDeleteRequest
-├── entity/           # User、Conversation、Message
-├── exception/        # GlobalExceptionHandler
-├── repository/       # UserRepository、ConversationRepository、MessageRepository
+├── entity/           # User、Conversation、Message（均带索引注解）
+├── exception/        # GlobalExceptionHandler + Business/NotFound/Forbidden/UnauthorizedException
+├── repository/       # UserRepository、ConversationRepository、MessageRepository（消息按 id 排序 + 分页）
 ├── service/          # 4 个 Service
 │   ├── AuthService         # 注册/登录(双Token签发)/refresh(rotation)/logout
 │   ├── TokenStoreService   # Redis：refresh(username绑定) + access jti 黑名单 TTL=剩余有效期
@@ -128,15 +130,19 @@ src/main/java/com/example/springaichat/
 └── SpringAiChatApplication.java
 
 frontend/src/
-├── api/config.js
+├── api/config.js        # 默认相对路径 /api（Vite 代理），可用 VITE_API_BASE_URL 覆盖
 ├── router/index.js      # / → Login.vue ; /chat → Chat.vue (路由守卫，优先读 accessToken 兼容 token)
-├── utils/axios.js       # Axios 实例 + Authorization 拦截器 + 401 自动 refresh（队列并发锁 + token rotation 更新）
+├── utils/axios.js       # Axios 实例 + Authorization 拦截器 + 401 自动 refresh（单飞 + _retried 防重放死循环）
 │                        # 导出 saveAuthTokens / clearAllAuth / getAccessToken 等工具函数
+├── utils/auth.js        # refreshToken 单飞：并发 401（axios + SSE）共用同一次 refresh
+├── utils/time.js        # 会话列表 / 消息气泡共用的相对时间格式化
+├── utils/sseParser.js   # SSE 解析：保留多行 data，并返回 event 名称（message / error）
+├── composables/useStreamChat.js  # SSE 流 / 打字机 / 暂停 / id 定位更新 / 请求序号防竞态 / 401 自动重试一次
 ├── views/
-│   ├── Chat.vue         # SSE 流 / 打字机 10ms / 暂停 / 右键菜单 / 批量删除 / logout 先调后端 /api/auth/logout
-│   └── Login.vue        # 登录(调用 saveAuthTokens 存双token) + 注册 Tab
+│   ├── Chat.vue         # 分页加载（limit/beforeId）+ 加载更早消息 / 右键菜单 / 批量删除 / logout 先调后端
+│   └── Login.vue        # 登录(调用 saveAuthTokens 存双token) + 注册弹窗
 ├── App.vue
-├── main.js
+├── main.js              # Element Plus 组件与图标按需注册
 └── style.css
 ```
 
@@ -149,9 +155,9 @@ frontend/src/
 | 数据层 | repository | UserRepository / ConversationRepository / MessageRepository | JPA 原生查询 + 自定义按 userId/conversationId 条件 |
 | 实体层 | entity | User / Conversation / Message | 严格对应 MySQL 表字段 |
 | 传输层 | dto | 8 个 DTO | 前后端请求 / 响应数据隔离（LoginResponse 含双 Token + expiresIn） |
-| 配置层 | config | 7 个配置类 | Security / JWT(type+黑名单) / JWT 密钥校验 / CORS / Redis / ChatClient / VectorStore |
+| 配置层 | config | 8 个配置类 | Security / JWT(type+黑名单) / JWT 密钥校验 / CORS / Redis / 异步线程池 / ChatClient / VectorStore |
 | 工具层 | util | JwtUtil | access/refresh Token 生成 / 解析 / type 校验 / jti 提取 |
-| 异常层 | exception | GlobalExceptionHandler | 兜底统一错误响应 |
+| 异常层 | exception | GlobalExceptionHandler | 按异常类型映射 HTTP 状态码（400/401/403/404/500），校验失败返回 `errors` 字段 |
 
 ### 3.3 application.properties 关键配置（注意：项目为 properties 非 yml）
 
@@ -160,8 +166,10 @@ frontend/src/
 | server.port=8080 | 后端端口 |
 | spring.application.name=enterprise-rag | 应用名 |
 | spring.datasource.* / hikari.* | MySQL + Hikari，密码 ${MYSQL_PASSWORD} |
-| spring.jpa.hibernate.ddl-auto=update | 自动建/改表（开发环境） |
-| spring.data.redis.host=localhost port=6379 | Redis 缓存 + 向量库共用 |
+| spring.jpa.hibernate.ddl-auto=${JPA_DDL_AUTO:update} | 自动建/改表（开发环境），生产建议 validate |
+| spring.jpa.open-in-view=false | 避免视图层持有 EntityManager，事务边界更清晰 |
+| spring.mvc.async.request-timeout=300000 | SSE 长回答的异步超时（默认 30s 不够） |
+| spring.data.redis.host=localhost port=6379 | Redis 缓存 + 向量库共用（密码/库号也透传给 Jedis） |
 | spring.ai.openai.* | 阿里云百炼兼容 OpenAI：qwen-plus 聊天，text-embedding-v2 嵌入 |
 | cors.allowed-origins | 跨域白名单，默认 5173，可用 CORS_ALLOWED_ORIGINS 覆盖 |
 | spring.ai.vectorstore.redis.* | index=chat_knowledge_index prefix=rag:vector: initialize-schema=true |
@@ -239,41 +247,39 @@ frontend/src/
 ### 4.3 消息发送（SSE 流式）完整链路
 
 ```
-前端 Chat.vue sendMessageStream()
+前端 useStreamChat.sendMessageStream()
   │  POST /api/chat/messages/stream   Content-Type: text/event-stream
   ▼
 ChatController.streamMessage()
-  │  校验 user != null，否则直接返回 {"error": "用户未登录..."}
   │  返回 chatService.streamMessage()  Flux<String>
-  │  controller 层加：onErrorResume(error → JSON 错误事件)
+  │  map → ServerSentEvent(event=message)；onErrorResume → ServerSentEvent(event=error)
   ▼
 ChatService.streamMessage(userId, MessageRequest)
   ├── 1. 归属校验：getConversation(userId, conversationId)
-  ├── 2. ✅ 异步：CompletableFuture.runAsync(saveUserMessageAsync(...)) 不阻塞首字
-  ├── 3. ✅ 异步：若为新会话 -> CompletableFuture.runAsync(updateConversationTitleAsync(...))
-  ├── 4. getOrCreateChatHistory(conversationId):
-  │      Redis命中 → 返回；未命中 → MySQL查消息 → 反序列化为List<Message> → 回写Redis TTL 24h
-  ├── 5. trimChatHistory(history, 20条 / 4096 Token 估算双重限制)：从 index=1 开始删；保留 index=0 SystemMessage
+  ├── 2. getOrCreateChatHistory(conversationId) 先读历史
+  │      Redis命中 → 返回；未命中 → MySQL查消息 → 回写Redis TTL 24h
+  ├── 3. saveUserMessage(...) 同步落库（毫秒级，保证问题不丢、顺序稳定）
+  ├── 4. scheduleTitleUpdate(...) 通过 chatTaskExecutor 异步更新标题 + updateTime
+  ├── 5. trimChatHistory(history)：20 条 / 4096 Token 双重限制；只保护真正的 SystemMessage，且裁剪后以 user 消息开头
   ├── 6. buildMessages(systemPrompt + 历史 + 当前用户消息)
   │      systemPrompt 内附 RAG 规则：「回答必须基于参考资料，不能编造」
-  ├── 7. streamAiResponse 包装重试（最多2次，Connection reset 等）
-  │      Flux<String> 作为 SSE data 事件逐段发出
-  │      累计流式字符串到 fullResponse
-  └── 8. doOnComplete
-         ├── saveAiResponse(conversationId, fullResponse)
-         └── saveChatHistory(conversationId, 新历史) 更新 Redis 缓存
+  ├── 7. streamAiResponse 包装重试（最多2次，Connection reset 等；已输出内容则不重试）
+  │      Flux<String> 逐段发出，累计 fullResponse
+  └── 8. doOnComplete / doFinally（取消或异常）
+         ├── saveAiResponse(conversationId, fullResponse) 先落库 MySQL
+         └── saveChatHistory(conversationId, 新历史) 再写 Redis（失败不影响落库）
 
 前端 fetch + reader.read() 循环：
-  按 data: 行切片 → 逐字符追加 → 每字符 sleep(10ms) 打字机
-  catch: ElMessage 弹提示 + 移除 AI 占位消息
-  finally: isStreaming/isPaused 标志重置 + 消息状态 done
+  sseParser 解析 event/data → event=error 弹提示；event=message 逐字符 sleep(10ms) 打字机
+  消息按本地 id 定位更新；streamSequence 序号防止切换会话/取消后的旧流回写
+  401 → 单飞 refresh 成功后自动重试一次
+  finally: isStreaming/isPaused 标志重置 + 消息状态 done（部分内容保留）
 ```
 
 接口：
 - `POST /api/chat/messages` - 同步
-- `POST /api/chat/messages/stream` - SSE
-- `POST /api/chat/messages/stream/json` - NDJSON
-- `GET /api/chat/conversations/{id}/messages` - 会话消息列表（归属校验）
+- `POST /api/chat/messages/stream` - SSE（`event: message` / `event: error`）
+- `GET /api/chat/conversations/{id}/messages?limit=&beforeId=` - 会话消息列表（归属校验，默认全量，带参分页）
 
 ### 4.4 消息删除流程
 
@@ -346,12 +352,13 @@ saveChatHistory(conversationId, newHistory)
   └── redisTemplate.opsForValue().set(key, json, Duration.ofHours(24))
 ```
 
-消息/会话删除时：先写 MySQL → **删除** Redis 缓存（不是更新）。
+消息/会话删除时：先写 MySQL → 事务提交后 **删除** Redis 缓存（不是更新）。
 删除失败最多重试 2 次，间隔递增。
 
 ### 5.4 trimChatHistory 双重限制
-- 从 index=1（跳过 SystemMessage 索引 0）开始裁剪。
-- 条件：`list.size() > 20` 或 `estimateTokens(list) > 4096`。
+- 仅当列表首位真的是 SystemMessage 时才保护它（缓存/DB 加载的历史首位是普通消息）。
+- 数量条件：`size - prefix > 20`；Token 条件：`estimateTokens(list) > 4096`，逐条递减避免重复估算。
+- 裁剪后强制以 user 消息开头，避免留下没有对应提问的孤立回答。
 - estimateTokens 规则：中文 2 字符 = 1 Token、英文 4 字符 = 1 Token、每条消息额外 +4 Token。
 
 ### 5.5 一致性保障

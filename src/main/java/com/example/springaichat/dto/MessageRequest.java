@@ -1,12 +1,15 @@
 package com.example.springaichat.dto;
 
+import jakarta.validation.constraints.NotBlank;
+
 /**
  * 消息请求DTO
  */
 public class MessageRequest {
 
     private Long conversationId;
-    
+
+    @NotBlank(message = "消息内容不能为空")
     private String content;
 
     public MessageRequest() {

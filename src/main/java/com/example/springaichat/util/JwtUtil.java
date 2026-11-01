@@ -35,7 +35,7 @@ public class JwtUtil {
     private static final String CLAIM_TYPE = "type";
     private static final String CLAIM_JTI = "jti";
 
-    private final JwtSecretProvider secretProvider;
+    private final SecretKey signingKey;
 
     @Value("${jwt.access-expiration:1800000}")
     private Long accessExpiration;
@@ -44,7 +44,8 @@ public class JwtUtil {
     private Long refreshExpiration;
 
     public JwtUtil(JwtSecretProvider secretProvider) {
-        this.secretProvider = secretProvider;
+        // 密钥只构造一次：每个请求都重新派生 HMAC Key 没有意义
+        this.signingKey = Keys.hmacShaKeyFor(secretProvider.getSecret().getBytes(StandardCharsets.UTF_8));
     }
 
     // ==================== 提取声明 ====================
@@ -78,16 +79,16 @@ public class JwtUtil {
     }
 
     private Claims extractAllClaims(String token) {
-        SecretKey key = Keys.hmacShaKeyFor(secretProvider.getSecret().getBytes(StandardCharsets.UTF_8));
         return Jwts.parser()
-                .verifyWith(key)
+                .verifyWith(signingKey)
                 .build()
                 .parseSignedClaims(token)
                 .getPayload();
     }
 
-    private Boolean isTokenExpired(String token) {
-        return extractExpiration(token).before(new Date());
+    private boolean isExpired(Claims claims) {
+        Date expiration = claims.getExpiration();
+        return expiration == null || expiration.before(new Date());
     }
 
     // ==================== 生成 Token ====================
@@ -120,34 +121,41 @@ public class JwtUtil {
     }
 
     private String createToken(Map<String, Object> claims, String subject, Long expiration) {
-        SecretKey key = Keys.hmacShaKeyFor(secretProvider.getSecret().getBytes(StandardCharsets.UTF_8));
         return Jwts.builder()
                 .claims(claims)
                 .subject(subject)
                 .issuedAt(new Date(System.currentTimeMillis()))
                 .expiration(new Date(System.currentTimeMillis() + expiration))
-                .signWith(key)
+                .signWith(signingKey)
                 .compact();
     }
 
     // ==================== 校验 Token ====================
 
     /**
-     * 基础校验：签名、过期、subject 匹配
+     * 基础校验：签名、过期、subject 匹配。一次解析拿到所有声明。
      */
     public Boolean validateToken(String token, String username) {
-        final String extractedUsername = extractUsername(token);
-        return (extractedUsername.equals(username) && !isTokenExpired(token));
+        try {
+            Claims claims = extractAllClaims(token);
+            return username.equals(claims.getSubject()) && !isExpired(claims);
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     /**
      * 带类型的校验：只允许指定类型通过
      */
     public Boolean validateToken(String token, String username, String expectedType) {
-        if (!validateToken(token, username)) {
+        try {
+            Claims claims = extractAllClaims(token);
+            return username.equals(claims.getSubject())
+                    && !isExpired(claims)
+                    && expectedType.equals(claims.get(CLAIM_TYPE, String.class));
+        } catch (Exception e) {
             return false;
         }
-        return expectedType.equals(extractTokenType(token));
     }
 
     /**
@@ -155,10 +163,8 @@ public class JwtUtil {
      */
     public Boolean isValidWithoutUsername(String token, String expectedType) {
         try {
-            if (isTokenExpired(token)) {
-                return false;
-            }
-            return expectedType.equals(extractTokenType(token));
+            Claims claims = extractAllClaims(token);
+            return !isExpired(claims) && expectedType.equals(claims.get(CLAIM_TYPE, String.class));
         } catch (Exception e) {
             return false;
         }

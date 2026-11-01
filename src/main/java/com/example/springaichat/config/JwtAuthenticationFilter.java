@@ -4,6 +4,8 @@ import com.example.springaichat.entity.User;
 import com.example.springaichat.repository.UserRepository;
 import com.example.springaichat.service.TokenStoreService;
 import com.example.springaichat.util.JwtUtil;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
@@ -19,6 +21,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.Optional;
 
@@ -35,6 +38,15 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final JwtUtil jwtUtil;
     private final UserRepository userRepository;
     private final TokenStoreService tokenStoreService;
+
+    /**
+     * 用户信息缓存：JWT 每请求校验通过后不必再查一次 user 表。
+     * 5 分钟过期，删除用户的场景最多延迟 5 分钟生效。
+     */
+    private final Cache<String, Optional<User>> userCache = Caffeine.newBuilder()
+            .maximumSize(10_000)
+            .expireAfterWrite(Duration.ofMinutes(5))
+            .build();
 
     public JwtAuthenticationFilter(JwtUtil jwtUtil,
                                    UserRepository userRepository,
@@ -81,7 +93,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 String jti = claims.getId();
 
                 if (typeOk && !tokenStoreService.isAccessTokenBlacklistedByJti(jti)) {
-                    Optional<User> userOptional = userRepository.findByUsername(username);
+                    Optional<User> userOptional = userCache.get(username, userRepository::findByUsername);
                     if (userOptional.isPresent()) {
                         UsernamePasswordAuthenticationToken authToken = new UsernamePasswordAuthenticationToken(
                                 userOptional.get(),

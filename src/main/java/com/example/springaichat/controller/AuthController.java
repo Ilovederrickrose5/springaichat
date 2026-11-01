@@ -6,6 +6,7 @@ import com.example.springaichat.dto.RefreshTokenRequest;
 import com.example.springaichat.dto.RegisterRequest;
 import com.example.springaichat.entity.User;
 import com.example.springaichat.service.AuthService;
+import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
@@ -23,6 +24,8 @@ import java.util.Map;
  *   <li>POST /api/auth/refresh   用 refresh 换新的 access + 新 refresh（rotation）</li>
  *   <li>POST /api/auth/logout    登出（需登录态，带 access Token header）</li>
  * </ul>
+ *
+ * 业务异常统一由 GlobalExceptionHandler 转换成对应的 HTTP 状态码。
  */
 @RestController
 @RequestMapping("/api/auth")
@@ -38,51 +41,26 @@ public class AuthController {
      * 用户注册
      */
     @PostMapping("/register")
-    public ResponseEntity<?> register(@RequestBody RegisterRequest request) {
-        try {
-            User user = authService.register(request);
+    public ResponseEntity<Map<String, Object>> register(@Valid @RequestBody RegisterRequest request) {
+        User user = authService.register(request);
 
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", true);
-            response.put("message", "注册成功");
-            response.put("userId", user.getId());
-            response.put("username", user.getUsername());
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", true);
+        response.put("message", "注册成功");
+        response.put("userId", user.getId());
+        response.put("username", user.getUsername());
 
-            return ResponseEntity.status(HttpStatus.CREATED).body(response);
-        } catch (RuntimeException e) {
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", e.getMessage());
-            return ResponseEntity.badRequest().body(response);
-        }
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
     /**
      * 用户登录 — 返回双 Token
      */
     @PostMapping("/login")
-    public ResponseEntity<?> login(@RequestBody LoginRequest request) {
-        try {
-            LoginResponse loginResponse = authService.login(request);
+    public ResponseEntity<Map<String, Object>> login(@Valid @RequestBody LoginRequest request) {
+        LoginResponse loginResponse = authService.login(request);
 
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", true);
-            response.put("message", "登录成功");
-            // 兼容字段：值 = accessToken
-            response.put("token", loginResponse.getAccessToken());
-            response.put("accessToken", loginResponse.getAccessToken());
-            response.put("refreshToken", loginResponse.getRefreshToken());
-            response.put("expiresIn", loginResponse.getExpiresIn());
-            response.put("userId", loginResponse.getUserId());
-            response.put("username", loginResponse.getUsername());
-
-            return ResponseEntity.ok(response);
-        } catch (RuntimeException e) {
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", e.getMessage());
-            return ResponseEntity.badRequest().body(response);
-        }
+        return ResponseEntity.ok(tokenResponse(loginResponse));
     }
 
     /**
@@ -90,27 +68,10 @@ public class AuthController {
      * 成功后返回新的 access + 新的 refresh（Token Rotation）
      */
     @PostMapping("/refresh")
-    public ResponseEntity<?> refresh(@RequestBody RefreshTokenRequest request) {
-        try {
-            LoginResponse loginResponse = authService.refresh(request.getRefreshToken());
+    public ResponseEntity<Map<String, Object>> refresh(@Valid @RequestBody RefreshTokenRequest request) {
+        LoginResponse loginResponse = authService.refresh(request.getRefreshToken());
 
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", true);
-            response.put("message", "刷新成功");
-            response.put("token", loginResponse.getAccessToken());
-            response.put("accessToken", loginResponse.getAccessToken());
-            response.put("refreshToken", loginResponse.getRefreshToken());
-            response.put("expiresIn", loginResponse.getExpiresIn());
-            response.put("userId", loginResponse.getUserId());
-            response.put("username", loginResponse.getUsername());
-
-            return ResponseEntity.ok(response);
-        } catch (RuntimeException e) {
-            Map<String, Object> response = new HashMap<>();
-            response.put("success", false);
-            response.put("message", e.getMessage());
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(response);
-        }
+        return ResponseEntity.ok(tokenResponse(loginResponse));
     }
 
     /**
@@ -118,9 +79,8 @@ public class AuthController {
      * 操作：access 进黑名单 + 删除该用户的 refresh
      */
     @PostMapping("/logout")
-    public ResponseEntity<?> logout(Authentication authentication,
-                                    @RequestHeader(value = "Authorization", required = false) String authHeader) {
-        Map<String, Object> response = new HashMap<>();
+    public ResponseEntity<Map<String, Object>> logout(Authentication authentication,
+            @RequestHeader(value = "Authorization", required = false) String authHeader) {
         String username = null;
         if (authentication != null && authentication.getPrincipal() instanceof User user) {
             username = user.getUsername();
@@ -128,6 +88,7 @@ public class AuthController {
         if (username == null && authentication != null) {
             username = authentication.getName();
         }
+
         String accessToken = null;
         if (authHeader != null && authHeader.startsWith("Bearer ")) {
             accessToken = authHeader.substring(7);
@@ -135,8 +96,23 @@ public class AuthController {
 
         authService.logout(username, accessToken);
 
+        Map<String, Object> response = new HashMap<>();
         response.put("success", true);
         response.put("message", "已退出登录");
         return ResponseEntity.ok(response);
+    }
+
+    private Map<String, Object> tokenResponse(LoginResponse loginResponse) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", true);
+        response.put("message", "登录成功");
+        // 兼容字段：值 = accessToken
+        response.put("token", loginResponse.getAccessToken());
+        response.put("accessToken", loginResponse.getAccessToken());
+        response.put("refreshToken", loginResponse.getRefreshToken());
+        response.put("expiresIn", loginResponse.getExpiresIn());
+        response.put("userId", loginResponse.getUserId());
+        response.put("username", loginResponse.getUsername());
+        return response;
     }
 }

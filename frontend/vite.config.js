@@ -24,9 +24,11 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (!id.includes('node_modules')) return
-          if (id.includes('vue') || id.includes('vue-router')) return 'vendor-vue'
-          if (id.includes('element-plus') || id.includes('@element-plus/icons-vue')) return 'vendor-element'
-          if (id.includes('axios')) return 'vendor-axios'
+          const inPkg = (name) => id.includes(`node_modules/${name}`)
+          // @vueuse 也含 "vue"，必须显式归到 element 侧，否则会与 element-plus 形成循环 chunk
+          if (inPkg('element-plus') || inPkg('@element-plus') || inPkg('@vueuse')) return 'vendor-element'
+          if (inPkg('vue') || inPkg('@vue/')) return 'vendor-vue'
+          if (inPkg('axios')) return 'vendor-axios'
           return 'vendor-others'
         }
       }
