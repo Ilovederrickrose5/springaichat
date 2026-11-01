@@ -1,5 +1,6 @@
 import axios from 'axios'
 import router from '../router'
+import BASE_URL from '../api/config'
 import { refreshToken as refreshAccessToken } from './auth'
 
 // ===== 本地存储 key =====
@@ -10,7 +11,7 @@ const USER_ID_KEY = 'userId'
 const USERNAME_KEY = 'username'
 
 const instance = axios.create({
-  baseURL: 'http://localhost:8080/api',
+  baseURL: BASE_URL,
   timeout: 30000
 })
 

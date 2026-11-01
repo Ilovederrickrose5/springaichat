@@ -17,12 +17,18 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 @ConditionalOnProperty(name = "rag.enabled", havingValue = "true")
@@ -42,7 +48,16 @@ public class KnowledgeBaseService {
     @Value("${rag.chunk.overlap-size:200}")
     private int chunkOverlapSize;
 
+    @Value("${rag.knowledge.default-tenant:asset}")
+    private String defaultTenant;
+
+    @Value("${spring.ai.vectorstore.redis.prefix:rag:vector:}")
+    private String vectorPrefix;
+
     private static final String PROCESSED_FILES_KEY = "rag:processed_files";
+    private static final String PROCESSED_DOCS_KEY = "rag:processed_docs";
+    private static final String INDEX_VERSION_KEY = "rag:index_version";
+    private static final String INDEX_VERSION = "2";
 
     public KnowledgeBaseService(VectorStore vectorStore, RedisTemplate<String, Object> redisTemplate) {
         this.vectorStore = vectorStore;
@@ -66,6 +81,8 @@ public class KnowledgeBaseService {
     }
 
     public void loadKnowledgeBase() throws IOException {
+        migrateIndexIfNeeded();
+
         PathMatchingResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
         Resource[] resources = resolver.getResources("classpath:" + knowledgeDirectory + "**/*.md");
 
@@ -74,32 +91,77 @@ public class KnowledgeBaseService {
             return;
         }
 
-        List<Document> allDocuments = new ArrayList<>();
-
         for (Resource resource : resources) {
-            String fileName = resource.getFilename();
-            String filePath = resource.getURI().getPath();
-
-            if (isFileAlreadyProcessed(filePath)) {
-                logger.info("Skipping already processed file: {}", fileName);
-                continue;
+            String fileKey = resolveFileKey(resource);
+            try {
+                loadFile(resource, fileKey);
+            } catch (Exception e) {
+                logger.error("Failed to process knowledge file: {}", fileKey, e);
             }
-
-            logger.info("Processing file: {}", fileName);
-
-            List<Document> documents = processFile(resource, fileName);
-            allDocuments.addAll(documents);
-
-            markFileAsProcessed(filePath);
-        }
-
-        if (!allDocuments.isEmpty()) {
-            vectorStore.add(allDocuments);
-            logger.info("Added {} document chunks to vector store", allDocuments.size());
         }
     }
 
-    private List<Document> processFile(Resource resource, String fileName) throws IOException {
+    /**
+     * 旧版本按文件路径做 Hash，无法感知内容变更；升级到内容 Hash 后做一次性全量重建，
+     * 避免旧分块与新分块同时存在造成重复召回。
+     */
+    private void migrateIndexIfNeeded() {
+        try {
+            Object currentVersion = redisTemplate.opsForValue().get(INDEX_VERSION_KEY);
+            if (INDEX_VERSION.equals(String.valueOf(currentVersion))) {
+                return;
+            }
+            logger.info("Knowledge index version changed, rebuilding vector index...");
+            deleteAllVectors();
+            redisTemplate.delete(PROCESSED_FILES_KEY);
+            redisTemplate.delete(PROCESSED_DOCS_KEY);
+            redisTemplate.opsForValue().set(INDEX_VERSION_KEY, INDEX_VERSION);
+        } catch (Exception e) {
+            logger.warn("Knowledge index migration skipped: {}", e.getMessage());
+        }
+    }
+
+    private void deleteAllVectors() {
+        Set<String> keys = redisTemplate.keys(vectorPrefix + "*");
+        if (keys == null || keys.isEmpty()) {
+            return;
+        }
+        List<String> ids = keys.stream()
+                .map(key -> key.substring(vectorPrefix.length()))
+                .collect(Collectors.toList());
+        vectorStore.delete(ids);
+        logger.info("Deleted {} legacy vector entries", ids.size());
+    }
+
+    private void loadFile(Resource resource, String fileKey) throws IOException {
+        String previousHash = getProcessedHash(fileKey);
+        String contentHash = computeContentHash(resource);
+        if (contentHash.equals(previousHash)) {
+            logger.info("Skipping unchanged file: {}", fileKey);
+            return;
+        }
+
+        logger.info("Processing file: {} (hash={})", fileKey, contentHash);
+
+        List<String> previousDocIds = getProcessedDocIds(fileKey);
+        List<Document> documents = processFile(resource, fileKey);
+
+        if (!documents.isEmpty()) {
+            vectorStore.add(documents);
+            logger.info("Added {} document chunks to vector store for {}", documents.size(), fileKey);
+        }
+
+        boolean deleted = deleteDocuments(previousDocIds, fileKey);
+        if (previousDocIds.isEmpty() && previousHash != null) {
+            logger.warn("No document id record found for updated file {}, old chunks may remain. " +
+                    "Recreate the Redis index if duplicates appear.", fileKey);
+        }
+
+        storeProcessedDocIds(fileKey, documents, deleted ? List.of() : previousDocIds);
+        markFileAsProcessed(fileKey, contentHash);
+    }
+
+    private List<Document> processFile(Resource resource, String fileKey) throws IOException {
         TextReader textReader = new TextReader(resource);
         List<Document> documents = textReader.get();
 
@@ -116,56 +178,107 @@ public class KnowledgeBaseService {
         for (int i = 0; i < chunks.size(); i++) {
             Document chunk = chunks.get(i);
             Map<String, Object> metadata = new HashMap<>(chunk.getMetadata());
-            metadata.put("tenant", "asset");
-            metadata.put("source", fileName);
+            metadata.put("tenant", defaultTenant);
+            metadata.put("source", fileKey);
             metadata.put("chunk_index", i);
             metadata.put("total_chunks", chunks.size());
 
-            enrichedChunks.add(new Document(chunk.getContent(), metadata));
+            // 显式指定 id，文件内容变化时可以按 id 删除旧分块后重新写入
+            enrichedChunks.add(new Document(UUID.randomUUID().toString(), chunk.getContent(), metadata));
         }
 
-        logger.info("Split file {} into {} chunks", fileName, enrichedChunks.size());
+        logger.info("Split file {} into {} chunks", fileKey, enrichedChunks.size());
         return enrichedChunks;
     }
 
-    private boolean isFileAlreadyProcessed(String filePath) {
+    private boolean deleteDocuments(List<String> docIds, String fileKey) {
+        if (docIds.isEmpty()) {
+            return true;
+        }
         try {
-            String fileHash = computeFileHash(filePath);
-            String processedHash = (String) redisTemplate.opsForHash().get(PROCESSED_FILES_KEY, filePath);
-            return fileHash.equals(processedHash);
+            var result = vectorStore.delete(docIds);
+            boolean succeeded = result.isEmpty() || Boolean.TRUE.equals(result.get());
+            if (succeeded) {
+                logger.info("Deleted {} stale chunks for {}", docIds.size(), fileKey);
+                return true;
+            }
+            logger.warn("Vector store reported failure deleting {} stale chunks for {}", docIds.size(), fileKey);
+            return false;
         } catch (Exception e) {
-            logger.warn("Error checking if file is processed: {}", e.getMessage());
+            logger.warn("Failed to delete stale chunks for {}: {}", fileKey, e.getMessage());
             return false;
         }
     }
 
-    private void markFileAsProcessed(String filePath) {
+    private String computeContentHash(Resource resource) throws IOException {
         try {
-            String fileHash = computeFileHash(filePath);
-            redisTemplate.opsForHash().put(PROCESSED_FILES_KEY, filePath, fileHash);
-            logger.debug("Marked file as processed: {}", filePath);
+            MessageDigest digest = MessageDigest.getInstance("MD5");
+            try (InputStream inputStream = resource.getInputStream()) {
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read = inputStream.read(buffer)) != -1) {
+                    digest.update(buffer, 0, read);
+                }
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("MD5 algorithm not available", e);
+        }
+    }
+
+    private String resolveFileKey(Resource resource) {
+        String fileName = resource.getFilename();
+        return fileName != null ? fileName : resource.getDescription();
+    }
+
+    private String getProcessedHash(String fileKey) {
+        try {
+            Object value = redisTemplate.opsForHash().get(PROCESSED_FILES_KEY, fileKey);
+            return value != null ? value.toString() : null;
+        } catch (Exception e) {
+            logger.warn("Error reading processed hash for {}: {}", fileKey, e.getMessage());
+            return null;
+        }
+    }
+
+    private void markFileAsProcessed(String fileKey, String contentHash) {
+        try {
+            redisTemplate.opsForHash().put(PROCESSED_FILES_KEY, fileKey, contentHash);
+            logger.debug("Marked file as processed: {}", fileKey);
         } catch (Exception e) {
             logger.warn("Error marking file as processed: {}", e.getMessage());
         }
     }
 
-    private String computeFileHash(String filePath) throws NoSuchAlgorithmException {
-        MessageDigest digest = MessageDigest.getInstance("MD5");
-        byte[] hashBytes = digest.digest(filePath.getBytes());
-
-        StringBuilder hexString = new StringBuilder();
-        for (byte b : hashBytes) {
-            String hex = Integer.toHexString(0xff & b);
-            if (hex.length() == 1) {
-                hexString.append('0');
+    private List<String> getProcessedDocIds(String fileKey) {
+        try {
+            Object value = redisTemplate.opsForHash().get(PROCESSED_DOCS_KEY, fileKey);
+            if (value == null) {
+                return new ArrayList<>();
             }
-            hexString.append(hex);
+            return Arrays.stream(value.toString().split(","))
+                    .map(String::trim)
+                    .filter(id -> !id.isEmpty())
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            logger.warn("Error reading processed document ids for {}: {}", fileKey, e.getMessage());
+            return new ArrayList<>();
         }
-        return hexString.toString();
+    }
+
+    private void storeProcessedDocIds(String fileKey, List<Document> documents, List<String> carryOverIds) {
+        try {
+            List<String> ids = new ArrayList<>(carryOverIds);
+            ids.addAll(documents.stream().map(Document::getId).collect(Collectors.toList()));
+            redisTemplate.opsForHash().put(PROCESSED_DOCS_KEY, fileKey, String.join(",", ids));
+        } catch (Exception e) {
+            logger.warn("Error storing processed document ids for {}: {}", fileKey, e.getMessage());
+        }
     }
 
     public void clearProcessedFiles() {
         redisTemplate.delete(PROCESSED_FILES_KEY);
+        redisTemplate.delete(PROCESSED_DOCS_KEY);
         logger.info("Cleared all processed file records");
     }
 

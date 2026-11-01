@@ -4,6 +4,8 @@ import com.example.springaichat.entity.User;
 import com.example.springaichat.repository.UserRepository;
 import com.example.springaichat.service.TokenStoreService;
 import com.example.springaichat.util.JwtUtil;
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -68,34 +70,37 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         jwt = authHeader.substring(7);
 
         try {
-            username = jwtUtil.extractUsername(jwt);
+            // 一次验签拿到全部声明，避免为 username / type / jti 反复解析
+            Claims claims = jwtUtil.parseClaims(jwt);
+            username = claims.getSubject();
 
             if (username != null && SecurityContextHolder.getContext().getAuthentication() == null) {
-                Optional<User> userOptional = userRepository.findByUsername(username);
+                // 1. type 必须是 access（防止 refresh Token 被拿来当 access 调业务接口）
+                // 2. 黑名单校验：登出 / 掉线的 access 不能再用
+                boolean typeOk = JwtUtil.TYPE_ACCESS.equals(claims.get("type", String.class));
+                String jti = claims.getId();
 
-                // 1. 签名 + 过期 + subject 校验
-                // 2. type 必须是 access（防止 refresh Token 被拿来当 access 调业务接口）
-                // 3. 黑名单校验：登出 / 掉线的 access 不能再用
-                boolean typeOk = JwtUtil.TYPE_ACCESS.equals(jwtUtil.extractTokenType(jwt));
-                if (userOptional.isPresent()
-                        && jwtUtil.validateToken(jwt, username)
-                        && typeOk
-                        && !tokenStoreService.isAccessTokenBlacklisted(jwt)) {
-
-                    UsernamePasswordAuthenticationToken authToken = new UsernamePasswordAuthenticationToken(
-                            userOptional.get(),
-                            null,
-                            Collections.singletonList(new SimpleGrantedAuthority("ROLE_USER"))
-                    );
-                    authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-                    SecurityContextHolder.getContext().setAuthentication(authToken);
-                    logger.debug("JWT filter authenticated user: " + username);
+                if (typeOk && !tokenStoreService.isAccessTokenBlacklistedByJti(jti)) {
+                    Optional<User> userOptional = userRepository.findByUsername(username);
+                    if (userOptional.isPresent()) {
+                        UsernamePasswordAuthenticationToken authToken = new UsernamePasswordAuthenticationToken(
+                                userOptional.get(),
+                                null,
+                                Collections.singletonList(new SimpleGrantedAuthority("ROLE_USER"))
+                        );
+                        authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                        SecurityContextHolder.getContext().setAuthentication(authToken);
+                        logger.debug("JWT filter authenticated user: " + username);
+                    }
                 } else {
                     logger.warn("JWT filter rejected token username=" + username + ", typeOk=" + typeOk);
                 }
             }
+        } catch (JwtException | IllegalArgumentException e) {
+            // 过期 / 签名不合法 / 格式错误属于正常业务场景，不打印堆栈
+            logger.debug("Invalid JWT: " + e.getMessage());
         } catch (Exception e) {
-            logger.error("Cannot set user authentication", e);
+            logger.warn("Cannot set user authentication: " + e.getMessage());
         }
 
         filterChain.doFilter(request, response);

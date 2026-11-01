@@ -285,6 +285,9 @@ public class ChatController {
             logger.warn("streamMessage rejected because authentication principal is null");
             return Flux.just("{\"error\": \"用户未登录或Token无效\"}");
         }
+        if (request == null) {
+            return Flux.just("{\"error\": \"请求不能为空\"}");
+        }
 
         return chatService.streamMessage(user.getId(), request)
                 .doOnError(error -> {
@@ -293,10 +296,7 @@ public class ChatController {
                             request.getConversationId(),
                             error);
                 })
-                .onErrorResume(error -> Flux.just("{\"error\": \"" + escapeJson(error.getMessage()) + "\"}"))
-                .doOnComplete(() -> {
-                    // 流结束时发送完成信号
-                });
+                .onErrorResume(error -> Flux.just("{\"error\": \"" + escapeJson(error.getMessage()) + "\"}"));
     }
 
     /**
@@ -307,17 +307,24 @@ public class ChatController {
     public Flux<String> streamMessageJson(
             @AuthenticationPrincipal User user,
             @RequestBody MessageRequest request) {
+        if (user == null) {
+            return Flux.just("{\"error\": \"用户未登录或Token无效\"}");
+        }
+        if (request == null) {
+            return Flux.just("{\"error\": \"请求不能为空\"}");
+        }
         return chatService.streamMessage(user.getId(), request)
                 .map(content -> "{\"content\": \"" + escapeJson(content) + "\"}")
-                .doOnError(error -> {
-                    // 发送错误信息
-                });
+                .onErrorResume(error -> Flux.just("{\"error\": \"" + escapeJson(error.getMessage()) + "\"}"));
     }
 
     /**
      * JSON 转义
      */
     private String escapeJson(String text) {
+        if (text == null) {
+            return "";
+        }
         return text.replace("\\", "\\\\")
                 .replace("\"", "\\\"")
                 .replace("\n", "\\n")

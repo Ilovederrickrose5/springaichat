@@ -1,7 +1,8 @@
 import axios from 'axios'
+import BASE_URL from '../api/config'
 import { saveAuthTokens, getRefreshToken, getAccessToken } from './axios'
 
-const REFRESH_URL = 'http://localhost:8080/api/auth/refresh'
+const REFRESH_URL = `${BASE_URL}/auth/refresh`
 
 /**
  * 用 refreshToken 换取新的双 Token（Token Rotation）。

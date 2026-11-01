@@ -116,15 +116,10 @@ public class TokenStoreService {
     }
 
     /**
-     * 判断 access Token 是否已被加入黑名单
+     * 判断 access Token 的 jti 是否已被加入黑名单。
+     * 由调用方传入已解析的 jti，避免重复验签。
      */
-    public boolean isAccessTokenBlacklisted(String accessToken) {
-        String jti;
-        try {
-            jti = jwtUtil.extractTokenId(accessToken);
-        } catch (Exception e) {
-            return false;
-        }
+    public boolean isAccessTokenBlacklistedByJti(String jti) {
         if (jti == null) {
             return false;
         }

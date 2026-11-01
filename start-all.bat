@@ -18,14 +18,9 @@ for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":%BACKEND_PORT%"') do taskki
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":%FRONTEND_PORT%"') do taskkill /f /pid %%p >nul 2>&1
 echo 清理完毕
 
-echo 启动 Docker Redis Stack...
-:: 检查容器是否存在并启动
-docker start redis-stack >nul 2>&1
-if errorlevel 1 (
-    echo Redis Stack 容器不存在，正在创建...
-    docker run -d --name redis-stack -p 6379:6379 -p 8001:8001 redis/redis-stack:latest
-)
-timeout /t 3 /nobreak >nul
+echo 启动 MySQL + Redis Stack...
+docker compose -f "%PROJECT_ROOT%\docker-compose.yml" up -d
+timeout /t 5 /nobreak >nul
 
 echo 启动后端...
 start "Backend" /d "%PROJECT_ROOT%" cmd /k "mvn spring-boot:run"

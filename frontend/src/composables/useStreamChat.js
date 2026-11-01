@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import BASE_URL from '../api/config'
 import { parseSseEvents } from '../utils/sseParser.js'
 
 /**
@@ -98,7 +99,7 @@ export function useStreamChat(deps) {
       const controller = new AbortController()
       currentStreamController.value = controller
 
-      const response = await fetch('http://localhost:8080/api/chat/messages/stream', {
+      const response = await fetch(`${BASE_URL}/chat/messages/stream`, {
         method: 'POST',
         headers: {
           'Accept': 'text/event-stream',

@@ -12,6 +12,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
@@ -24,6 +25,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -82,6 +84,7 @@ class ChatServiceTest {
         ReflectionTestUtils.setField(chatService, "ragEnabled", false);
         ReflectionTestUtils.setField(chatService, "ragTopK", 3);
         ReflectionTestUtils.setField(chatService, "ragSimilarityThreshold", 0.30);
+        ReflectionTestUtils.setField(chatService, "ragTenant", "asset");
     }
 
     @Test
@@ -95,6 +98,90 @@ class ChatServiceTest {
 
         assertThat(received).containsExactly("ERR:消息长度不能超过4000个字符");
         verify(conversationRepository, never()).findById(any());
+    }
+
+    @Test
+    void streamMessage_rejectsBlankContent() {
+        List<String> received = chatService.streamMessage(1L, new MessageRequest(1L, "   "))
+                .onErrorResume(e -> Mono.just("ERR:" + e.getMessage()))
+                .collectList()
+                .block();
+
+        assertThat(received).containsExactly("ERR:消息内容不能为空");
+        verify(conversationRepository, never()).findById(any());
+    }
+
+    @Test
+    void streamMessage_sendsCurrentUserMessageOnlyOnce() {
+        stubConversation(5L, 1L);
+        when(messageRepository.findByConversationIdOrderByCreateTimeAsc(5L)).thenReturn(List.of());
+        stubStreaming(Flux.just("回答"));
+
+        chatService.streamMessage(1L, new MessageRequest(5L, "你好")).collectList().block();
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<org.springframework.ai.chat.messages.Message>> captor =
+                ArgumentCaptor.forClass(List.class);
+        verify(chatClientRequestSpec).messages(captor.capture());
+
+        long currentUserMessageCount = captor.getValue().stream()
+                .filter(message -> message instanceof UserMessage && "你好".equals(message.getContent()))
+                .count();
+        assertThat(currentUserMessageCount).isEqualTo(1);
+    }
+
+    @Test
+    void streamMessage_reusesCachedHistory() {
+        stubConversation(5L, 1L);
+        @SuppressWarnings("unchecked")
+        ValueOperations<String, Object> valueOperations = mock(ValueOperations.class);
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.get("chat:history:5")).thenReturn(
+                "[{\"role\":\"user\",\"content\":\"历史问题\"},{\"role\":\"assistant\",\"content\":\"历史回答\"}]");
+        stubStreaming(Flux.just("回答"));
+
+        chatService.streamMessage(1L, new MessageRequest(5L, "新问题")).collectList().block();
+
+        // 缓存命中时不应回源 MySQL
+        verify(messageRepository, never()).findByConversationIdOrderByCreateTimeAsc(any());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<org.springframework.ai.chat.messages.Message>> captor =
+                ArgumentCaptor.forClass(List.class);
+        verify(chatClientRequestSpec).messages(captor.capture());
+        assertThat(captor.getValue())
+                .anyMatch(message -> "历史问题".equals(message.getContent()))
+                .anyMatch(message -> "历史回答".equals(message.getContent()));
+    }
+
+    @Test
+    void streamMessage_retryDoesNotDuplicateUserMessage() {
+        stubConversation(5L, 1L);
+        when(messageRepository.findByConversationIdOrderByCreateTimeAsc(5L)).thenReturn(List.of());
+
+        AtomicInteger attempts = new AtomicInteger();
+        Flux<String> flaky = Flux.defer(() -> attempts.getAndIncrement() == 0
+                ? Flux.error(new RuntimeException("Connection reset"))
+                : Flux.just("回答"));
+        stubStreaming(flaky);
+
+        List<String> received = chatService.streamMessage(1L, new MessageRequest(5L, "你好"))
+                .collectList()
+                .block();
+
+        assertThat(received).containsExactly("回答");
+        assertThat(attempts.get()).isEqualTo(2);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<org.springframework.ai.chat.messages.Message>> captor =
+                ArgumentCaptor.forClass(List.class);
+        verify(chatClientRequestSpec, times(2)).messages(captor.capture());
+        for (List<org.springframework.ai.chat.messages.Message> sentMessages : captor.getAllValues()) {
+            long currentUserMessageCount = sentMessages.stream()
+                    .filter(message -> message instanceof UserMessage && "你好".equals(message.getContent()))
+                    .count();
+            assertThat(currentUserMessageCount).isEqualTo(1);
+        }
     }
 
     @Test

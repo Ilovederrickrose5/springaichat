@@ -56,4 +56,15 @@ pnpm-debug.log*
 # 本地运行/调试产物
 logs/
 *.pid
+*.log
 .DS_Store
+.screenshots/
+
+# Redis 本地持久化文件
+dump.rdb
+appendonly.aof
+
+# 误提交的临时文件
+/qc
+/org/
+/package-lock.json

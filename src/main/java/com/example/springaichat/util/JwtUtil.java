@@ -70,6 +70,13 @@ public class JwtUtil {
         return claimsResolver.apply(claims);
     }
 
+    /**
+     * 一次性解析并校验签名，供过滤器复用，避免同一请求多次验签。
+     */
+    public Claims parseClaims(String token) {
+        return extractAllClaims(token);
+    }
+
     private Claims extractAllClaims(String token) {
         SecretKey key = Keys.hmacShaKeyFor(secretProvider.getSecret().getBytes(StandardCharsets.UTF_8));
         return Jwts.parser()

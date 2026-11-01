@@ -29,7 +29,7 @@
 4. 打字机效果 + AI 气泡内「暂停/继续」控制
 5. 消息管理（单条删除、批量删除、归属校验、Redis 缓存清理重试）
 6. 聊天上下文记忆：Redis Cache-Aside 缓存 + MySQL 持久化 + 双重限制（消息条数 20 / Token 4096）
-7. RAG 检索增强：启动自动扫描 knowledge/ Markdown → Token 分块(800/200) → text-embedding-v2 向量化 → Redis Vector Store → 检索(topK=3, sim=0.45, tenant=asset过滤) → 拼进 SystemMessage
+7. RAG 检索增强：启动自动扫描 knowledge/ Markdown → Token 分块(800/200) → text-embedding-v2 向量化 → Redis Vector Store → 检索(topK=3, sim=0.30, 应用层 tenant 过滤) → 拼进 SystemMessage
 8. 首字响应优化：用户消息 / 会话标题更新异步落库（CompletableFuture.runAsync）
 9. 流式自动重试：Connection reset 等错误最多重试 2 次
 
@@ -100,12 +100,13 @@ user (1) ──(user_id)── (*) conversation (1) ──(conversation_id)─�
 
 ```
 src/main/java/com/example/springaichat/
-├── config/           # 6 个配置类
+├── config/           # 7 个配置类
 │   ├── SecurityConfig
 │   ├── JwtAuthenticationFilter     # 额外：type 必须是 access + jti 黑名单校验
-│   ├── CorsConfig
+│   ├── JwtSecretProvider           # JWT 密钥校验：dev 随机生成 / prod 缺失即失败
+│   ├── CorsConfig                  # 跨域白名单，cors.allowed-origins 可配置
 │   ├── RedisConfig
-│   ├── OpenAiChatConfig   # ChatClient @Primary Bean (qwen-turbo)，仅挂 SimpleLoggerAdvisor；RAG 检索由 ChatService 手动执行
+│   ├── OpenAiChatConfig   # ChatClient @Primary Bean (qwen-plus)，仅挂 SimpleLoggerAdvisor；RAG 检索由 ChatService 手动执行
 │   └── RagConfig          # VectorStore Bean (@ConditionalOnProperty rag.enabled)；不再注册 QuestionAnswerAdvisor（避免无租户过滤的自动检索）
 ├── controller/       # AuthController（register/login/refresh/logout）、ChatController（含 SSE + NDJSON）
 ├── dto/              # 8 个 DTO
@@ -148,7 +149,7 @@ frontend/src/
 | 数据层 | repository | UserRepository / ConversationRepository / MessageRepository | JPA 原生查询 + 自定义按 userId/conversationId 条件 |
 | 实体层 | entity | User / Conversation / Message | 严格对应 MySQL 表字段 |
 | 传输层 | dto | 8 个 DTO | 前后端请求 / 响应数据隔离（LoginResponse 含双 Token + expiresIn） |
-| 配置层 | config | 6 个配置类 | Security / JWT(type+黑名单) / CORS / Redis / ChatClient / VectorStore |
+| 配置层 | config | 7 个配置类 | Security / JWT(type+黑名单) / JWT 密钥校验 / CORS / Redis / ChatClient / VectorStore |
 | 工具层 | util | JwtUtil | access/refresh Token 生成 / 解析 / type 校验 / jti 提取 |
 | 异常层 | exception | GlobalExceptionHandler | 兜底统一错误响应 |
 
@@ -161,7 +162,8 @@ frontend/src/
 | spring.datasource.* / hikari.* | MySQL + Hikari，密码 ${MYSQL_PASSWORD} |
 | spring.jpa.hibernate.ddl-auto=update | 自动建/改表（开发环境） |
 | spring.data.redis.host=localhost port=6379 | Redis 缓存 + 向量库共用 |
-| spring.ai.openai.* | 阿里云百炼兼容 OpenAI：qwen-turbo 聊天，text-embedding-v2 嵌入 |
+| spring.ai.openai.* | 阿里云百炼兼容 OpenAI：qwen-plus 聊天，text-embedding-v2 嵌入 |
+| cors.allowed-origins | 跨域白名单，默认 5173，可用 CORS_ALLOWED_ORIGINS 覆盖 |
 | spring.ai.vectorstore.redis.* | index=chat_knowledge_index prefix=rag:vector: initialize-schema=true |
 | jwt.secret=${JWT_SECRET:…至少32字符} | JWT 签名密钥 |
 | jwt.access-expiration=1800000 | access Token 30 分钟过期 |
@@ -169,7 +171,7 @@ frontend/src/
 | jwt.redis.refresh-prefix=jwt:refresh: | Redis key：按 username 绑定的 refresh Token |
 | jwt.redis.blacklist-prefix=jwt:blacklist: | Redis key：登出的 access jti 黑名单（TTL=剩余有效期） |
 | chat.max-history-size=20 / max-message-length=4000 / max-tokens=4096 / cache-expire-hours=24 | 聊天上下文双重限制 + 缓存 TTL |
-| rag.enabled=true / retrieval.top-k=3 / retrieval.similarity-threshold=0.45 | RAG 检索参数 |
+| rag.enabled=true / retrieval.top-k=3 / retrieval.similarity-threshold=0.30 | RAG 检索参数 |
 | rag.chunk.max-size=800 / overlap-size=200 | Token 分块参数 |
 | rag.knowledge.directory=knowledge/ default-tenant=asset | 知识库目录 + 租户元数据 |
 
@@ -295,27 +297,29 @@ DELETE /api/chat/messages/{id} 或  POST batch-delete
 
 ```
 扫描 classpath:knowledge/**/*.md
-  ├── 按文件内容 MD5 做 hash → Redis set(rag:loaded) 已存在则跳过（去重）
+  ├── 按文件内容 MD5 做 hash → Redis hash rag:processed_files 已存在则跳过（去重）
   ├── TextReader 读 Markdown → String 原文
   ├── TokenTextSplitter(800, 200, 5, 10000, true) 切 Document 列表
-  ├── 每个 Document.metadata: tenant=asset, source=filename, chunk_index=N
+  ├── 每个 Document 显式生成 id，metadata: tenant={rag.knowledge.default-tenant}, source=filename, chunk_index=N
   ├── vectorStore.add(documents)
   │    → EmbeddingModel (text-embedding-v2) 生成向量
   │    → Redis Vector Store: chat_knowledge_index / prefix rag:vector:
-  └── 记录已处理 hash
+  └── 内容变更时：按 rag:processed_docs 记录的旧 id 删除旧分块，再记录新 hash / id
+      （首次升级到内容 Hash 方案时，rag:index_version 不匹配会触发一次全量重建）
 ```
 
 **检索（每次 SSE 消息前 ChatService.retrieveRagContext(question)）**
 
 ```
 SearchRequest.query(question)
-  .withTopK(3)
-  .withSimilarityThreshold(0.45)
-  .withFilterExpression("tenant == 'asset'")
+  .withTopK(topK * 3)                  # 多取候选，过滤后截断到 topK
+  .withSimilarityThreshold(0.30)
   → VectorStore.similaritySearch 返回 List<Document>
 
-将检索到的 3 个文档 chunk 拼接为「参考资料」段落拼进 System prompt
-若 qa_retrieved_documents 为空 -> 直接使用模型自身能力回答，不阻塞
+应用层按 metadata.tenant == rag.knowledge.default-tenant 过滤
+（当前 Redis 索引 schema 只含 content / embedding，tenant 未建索引）
+将过滤后的 3 个文档 chunk 拼接为「参考资料」段落拼进 System prompt
+若检索结果为空 -> 直接使用模型自身能力回答，不阻塞
 ```
 
 ---
@@ -373,7 +377,7 @@ saveChatHistory(conversationId, newHistory)
 - **约束**: 绝对禁止跨目录读取修改其他项目或系统文件。
 
 ### 6.2 mysql-aichat
-- **作用**: 连接 ai_chat_db（127.0.0.1:3306 root）做只读查询 / 描述表 / 数据核对。
+- **作用**: 连接 ai_chat_db（127.0.0.1:3307 root）做只读查询 / 描述表 / 数据核对。
 - **约束**: 仅操作本项目库；禁止删表 / 改生产结构。
 
 ### 6.3 codegraph

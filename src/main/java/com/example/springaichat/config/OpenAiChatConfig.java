@@ -31,6 +31,9 @@ public class OpenAiChatConfig {
   @Value("${spring.ai.openai.chat.options.temperature:0.7}")
   private Double temperature;
 
+  @Value("${spring.ai.openai.chat.options.max-tokens:2048}")
+  private Integer maxTokens;
+
   @Bean
   public OpenAiApi openAiApi() {
     String normalizedBaseUrl = normalizeBaseUrl(baseUrl);
@@ -43,7 +46,7 @@ public class OpenAiChatConfig {
     return OpenAiChatOptions.builder()
         .withModel(model)
         .withTemperature(temperature)
-        .withMaxTokens(2048)
+        .withMaxTokens(maxTokens)
         .withTopP(0.9)
         .withFrequencyPenalty(0.0)
         .withPresencePenalty(0.0)

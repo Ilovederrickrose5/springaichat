@@ -98,7 +98,8 @@ springaichat/
 │   ├── config/
 │   │   ├── SecurityConfig              # 路由权限、无状态会话、BCrypt
 │   │   ├── JwtAuthenticationFilter     # 解析 access Token + 黑名单校验
-│   │   ├── CorsConfig                  # 仅放行 5173
+│   │   ├── JwtSecretProvider           # JWT 密钥校验（dev 随机 / prod 强制）
+│   │   ├── CorsConfig                  # 跨域白名单（可配置）
 │   │   ├── RedisConfig                 # RedisTemplate 序列化
 │   │   ├── OpenAiChatConfig            # ChatClient（@Primary，qwen-plus）
 │   │   └── RagConfig                   # JedisPooled + RedisVectorStore（@ConditionalOnProperty）
@@ -109,7 +110,7 @@ springaichat/
 │   │   ├── AuthService                 # 双 Token 签发、refresh rotation、登出
 │   │   ├── TokenStoreService           # Redis：refresh 绑定 + access 黑名单
 │   │   ├── ChatService                 # 聊天主流程、缓存、RAG、异步落库、流式重试
-│   │   └── KnowledgeBaseService        # 知识库加载 / 分块 / 向量化 / Hash 去重
+│   │   └── KnowledgeBaseService        # 知识库加载 / 分块 / 向量化 / 内容 Hash 去重与旧分块清理
 │   ├── repository/                     # User / Conversation / Message
 │   ├── entity/                         # User / Conversation / Message
 │   ├── dto/                            # 8 个请求/响应 DTO
@@ -140,6 +141,7 @@ springaichat/
 │   │       ├── Chat.vue                # 主页面：状态编排、滚动控制、业务方法
 │   │       └── Login.vue               # 登录 / 注册
 │   ├── vite.config.js                  # manualChunks 分包
+│   ├── .env.example                    # VITE_API_BASE_URL 示例
 │   └── package.json
 ├── docker-compose.yml                  # MySQL(3307) + Redis Stack(6379)
 ├── start-all.bat                       # Windows 一键启动脚本
@@ -168,7 +170,7 @@ docker compose up -d
 | 服务 | 容器名 | 端口映射 | 说明 |
 |------|--------|----------|------|
 | MySQL 8.0 | `springaichat-mysql` | `3307 → 3306` | 库 `ai_chat_db`，root 密码默认 `123456`，数据卷持久化 |
-| Redis Stack | `springaichat-redis` | `6379 → 6379` | 含 RediSearch，缓存 + 向量库共用 |
+| Redis Stack | `springaichat-redis` | `6379 → 6379`、`8001 → 8001` | 含 RediSearch，缓存 + 向量库共用；8001 为 Redis Insight |
 
 > 必须使用 **Redis Stack**（或自行加载 RediSearch 模块）。普通 `redis:8` 镜像没有 `FT.*` 命令，向量索引无法创建。
 
@@ -181,7 +183,9 @@ docker compose up -d
 | `DB_URL` | JDBC 连接串 | 默认 `jdbc:mysql://localhost:3307/ai_chat_db?...` |
 | `DB_USERNAME` | 数据库用户名 | 默认 `root` |
 | `MYSQL_PASSWORD` | 数据库密码 | 无默认值，**必须设置**（本地 Docker 为 `123456`） |
+| `CORS_ALLOWED_ORIGINS` | 允许跨域的前端地址，逗号分隔 | 默认 `http://localhost:5173,http://127.0.0.1:5173` |
 | `SPRING_PROFILES_ACTIVE` | 运行环境 | 默认 `dev` |
+| `VITE_API_BASE_URL` | 前端请求的后端地址 | 默认 `http://localhost:8080/api`，见 `frontend/.env.example` |
 
 Windows 临时会话注入（避免读不到系统变量）：
 
@@ -207,7 +211,7 @@ npm run dev
 
 访问 http://localhost:5173 注册账号后即可对话。
 
-首次启动会自动扫描并向量化 `knowledge/` 下的 Markdown，需要有效的 API Key；后续启动按内容 Hash 跳过已入库文档。
+首次启动会自动扫描并向量化 `knowledge/` 下的 Markdown，需要有效的 API Key；后续启动按**文件内容 Hash** 跳过未变更文档。文件内容修改后会重新分块并删除旧向量，避免重复入库。
 
 ### 5.5 Windows 一键脚本
 
@@ -215,9 +219,9 @@ npm run dev
 start-all.bat
 ```
 
-脚本会清理 8080 / 5173 端口占用、启动 Redis、再拉起后端与前端。
+脚本会清理 8080 / 5173 端口占用，通过 `docker compose up -d` 启动 MySQL 与 Redis Stack，再拉起后端与前端。
 
-> 注意：脚本使用的是名为 `redis-stack` 的独立容器，与 `docker-compose.yml` 的 `springaichat-redis` 会争用 6379 端口，二者择一使用。
+> 注意：脚本与 `docker-compose.yml` 使用同一套容器，不要同时再手动 `docker compose up`。
 
 ---
 
@@ -234,6 +238,9 @@ spring.jpa.hibernate.ddl-auto=update
 # Redis（缓存 + 向量库）
 spring.data.redis.host=localhost
 spring.data.redis.port=6379
+
+# 跨域白名单（逗号分隔）
+cors.allowed-origins=${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
 
 # 阿里云百炼（OpenAI 兼容）
 spring.ai.openai.base-url=https://dashscope.aliyuncs.com/compatible-mode
@@ -263,6 +270,7 @@ rag.retrieval.similarity-threshold=0.30
 rag.chunk.max-size=800
 rag.chunk.overlap-size=200
 rag.knowledge.directory=knowledge/
+rag.knowledge.default-tenant=asset
 ```
 
 ---
@@ -325,9 +333,11 @@ Chat.vue → useStreamChat.sendStream()
 
 ### 8.4 RAG
 
-**加载**（启动时）：扫描 `knowledge/**/*.md` → 内容 MD5 去重 → TokenTextSplitter(800/200) → 附 metadata（`source`、`chunk_index`）→ `vectorStore.add()` 写入 `chat_knowledge_index`。
+**加载**（启动时）：扫描 `knowledge/**/*.md` → 文件**内容 MD5** 去重 → TokenTextSplitter(800/200) → 附 metadata（`tenant`、`source`、`chunk_index`）→ `vectorStore.add()` 写入 `chat_knowledge_index`。内容变更时记录新分块 ID，并在写入后删除旧分块，避免知识库重复。
 
-**检索**（每次提问）：`SearchRequest` topK=3、similarity=0.30，无租户过滤（当前 Redis 索引 schema 只有 `content` 与 `embedding` 字段，元数据不参与检索）。
+首次升级到内容 Hash 方案时，会通过 Redis 键 `rag:index_version` 检测版本并自动全量重建一次向量索引，避免旧分块与新分块重复。
+
+**检索**（每次提问）：`SearchRequest` topK=3（多取候选后过滤）、similarity=0.30。当前 Redis 索引 schema 只包含 `content` 与 `embedding`，因此租户隔离在应用层完成：只保留 `metadata.tenant == rag.knowledge.default-tenant` 的分块（缺少 tenant 的历史分块按默认租户处理）。
 
 **提示词**：要求以内部资料为依据、禁止编造；资料不足时说明「暂时没有查到相关内容」；**不输出**「参考资料」「来源」等引用字眼。
 
