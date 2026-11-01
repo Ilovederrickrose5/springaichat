@@ -10,18 +10,18 @@
 
 ### 对话界面
 
-![聊天界面](docs/screenshots/chat.png)
+![聊天界面](docs/screenshots/chat-ui.png)
 
 ### 登录 / 注册
 
 | 登录 | 注册 |
 |------|------|
-| ![登录界面](docs/screenshots/login.png) | ![用户注册](docs/screenshots/register.png) |
+| ![登录界面](docs/screenshots/login-ui.png) | ![用户注册](docs/screenshots/register-ui.png) |
 
 ### 移动端
 
 <p align="center">
-  <img src="docs/screenshots/chat-mobile.png" width="320" alt="移动端对话界面" />
+  <img src="docs/screenshots/chat-mobile-ui.png" width="320" alt="移动端对话界面" />
 </p>
 
 ---
