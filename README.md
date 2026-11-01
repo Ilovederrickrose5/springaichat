@@ -6,6 +6,16 @@
 
 ---
 
+## 界面预览
+
+![聊天界面](docs/screenshots/chat.png)
+
+| 登录 | 注册 |
+|------|------|
+| ![登录界面](docs/screenshots/login.png) | ![用户注册](docs/screenshots/register.png) |
+
+---
+
 ## 1. 功能特性
 
 ### 认证与安全
